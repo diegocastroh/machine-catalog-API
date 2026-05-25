@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { buildApp } from './app.js';
 import { LocalCrawlerRunner } from './catalog/crawler-runner.js';
 import { SupabaseCatalogStore } from './catalog/supabase-store.js';
