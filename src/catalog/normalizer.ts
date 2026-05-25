@@ -53,6 +53,32 @@ export class MachineCatalogNormalizer {
     };
   }
 
+  extractWeightKg(text: string): number | undefined {
+    const match = text.toLowerCase().replace(/,/g, '.').match(/(\d+(?:\.\d+)?)\s*(kg|kgs|lb|lbs|pound)/);
+    return match ? this.toKilograms(Number(match[1]), match[2]) : undefined;
+  }
+
+  extractTemperatureRange(text: string): { temperature_min_c?: number; temperature_max_c?: number } {
+    const normalized = text.toLowerCase().replace(/,/g, '.');
+    const match = normalized.match(/(-?\d+(?:\.\d+)?)\s*(?:-|to|–)\s*(-?\d+(?:\.\d+)?)\s*(c|°c|f|°f)/);
+    if (!match) return {};
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    if (match[3].includes('f')) {
+      return {
+        temperature_min_c: Math.round(((first - 32) * 5) / 9),
+        temperature_max_c: Math.round(((second - 32) * 5) / 9)
+      };
+    }
+    return { temperature_min_c: first, temperature_max_c: second };
+  }
+
+  detectFamily(modelName: string): string | undefined {
+    const cleaned = this.cleanModelName(modelName);
+    const tokens = cleaned.split(/\s+/);
+    return tokens.length > 1 ? tokens[0] : undefined;
+  }
+
   toMillimeters(value: number, unit: string): number {
     if (unit === 'cm') {
       return Math.round(value * 10);

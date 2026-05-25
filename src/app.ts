@@ -5,11 +5,13 @@ import swaggerUi from '@fastify/swagger-ui';
 import Fastify from 'fastify';
 import { ZodError } from 'zod';
 import { registerCatalogRoutes } from './catalog/routes.js';
+import type { CrawlerRunner } from './catalog/crawler-runner.js';
 import type { CatalogStore } from './catalog/store.js';
 
 export type BuildAppOptions = {
   store: CatalogStore;
   adminApiKey: string;
+  crawlerRunner?: CrawlerRunner;
 };
 
 export async function buildApp(options: BuildAppOptions) {

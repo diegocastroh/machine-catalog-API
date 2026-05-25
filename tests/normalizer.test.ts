@@ -23,6 +23,15 @@ describe('MachineCatalogNormalizer', () => {
     });
   });
 
+  it('extracts weight, temperature range and model family', () => {
+    expect(normalizer.extractWeightKg('Weight 220 lb')).toBe(99.79);
+    expect(normalizer.extractTemperatureRange('Temperature 35 - 46 F')).toEqual({
+      temperature_min_c: 2,
+      temperature_max_c: 8
+    });
+    expect(normalizer.detectFamily('Opera Touch 600')).toBe('Opera');
+  });
+
   it('calculates confidence with positive and negative evidence', () => {
     expect(
       normalizer.calculateConfidence({

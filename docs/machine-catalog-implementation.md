@@ -15,17 +15,25 @@ Backend:
 - `src/catalog/routes.ts`: define endpoints publicos internos, admin y link operativo.
 - `src/catalog/supabase-store.ts`: encapsula acceso a Supabase.
 - `src/catalog/normalizer.ts`: normalizacion inicial, conversiones, deteccion de categoria, validacion anti-SSRF y score.
+- `src/catalog/deduplicator.ts`: comparacion exacta, por fuente/hash y fuzzy para candidatos duplicados.
+- `src/catalog/review-service.ts`: construccion de aprobaciones/rechazos de extractions.
+- `src/catalog/crawler-runner.ts`: orquestacion local del worker Python.
 - `src/catalog/schemas.ts`: validacion Zod de payloads.
+- `workers/scraper`: paquete Python/Scrapy para robots, crawling controlado y extraccion.
 
 Base de datos:
 
 - `supabase/migrations/202605240001_machine_catalog.sql`: crea tablas, indices, vista `machine_catalog_model_details`, triggers `updated_at`, RLS y seeds.
+- `supabase/migrations/202605240002_scraping_review_pipeline.sql`: agrega source configs, logs de crawl, duplicados y campos de progreso de jobs.
 - Migracion aplicada en Supabase como `machine_catalog_base`.
 
 Pruebas:
 
 - `tests/normalizer.test.ts`: categorias, dimensiones, confidence score y URL validation.
+- `tests/deduplicator.test.ts`: exact, fuzzy y no-match.
+- `tests/review-flow.test.ts`: approve/reject de extraction.
 - `tests/routes.test.ts`: admin key y regla de no publicar modelos pendientes en endpoints publicos.
+- `workers/scraper/tests/test_extractors.py`: robots y extraccion de JSON-LD/OpenGraph/HTML/assets con fixtures locales.
 
 ## Seguridad
 
@@ -35,12 +43,32 @@ Pruebas:
 - No se crean politicas permisivas para `anon` ni `authenticated`.
 - La API bloquea URLs `localhost`, rangos privados, `169.254.*`, metadata services y esquemas no HTTP/HTTPS.
 - Los endpoints publicos de modelos consultan solo `status=approved`.
+- Scrapy se configura con `ROBOTSTXT_OBEY`, delay minimo, concurrencia baja por dominio, AutoThrottle y retries.
+
+## Matriz de cobertura del MD
+
+| Requisito | Estado |
+| --- | --- |
+| Migraciones y entidades de catalogo | Implementado |
+| CRUD manual fabricantes/modelos | Implementado |
+| Imagenes/documentos con fuente | Implementado |
+| Source configs y crawl jobs | Implementado |
+| Worker Scrapy controlado | Implementado para fuentes configuradas |
+| robots.txt, delays, AutoThrottle | Implementado en worker |
+| Raw y normalized extractions | Implementado |
+| Review approve/reject/edit | Implementado por API |
+| Merge/deduplicacion | Implementado backend/API |
+| OpenAPI | Implementado en `/docs` |
+| Panel admin visual | Pendiente fuera del alcance acordado |
+| Discovery externo Brave Search | Pendiente fuera del alcance acordado |
+| Cloud Run | Pendiente fuera del alcance acordado |
 
 ## Validaciones ejecutadas
 
 - `npm run typecheck`
 - `npm run lint`
 - `npm test`
+- `python -m pytest workers/scraper/tests`
 - `npm run build`
 - Supabase MCP: `list_tables`, `list_migrations`, conteo de seeds.
 
@@ -53,7 +81,6 @@ Resultado Supabase:
 
 ## Riesgos y pendientes
 
-- El crawler aun no ejecuta scraping real; esta fase solo crea fuentes y jobs en estado `queued`.
 - Falta UI administrativa.
 - Falta RBAC real con usuarios/roles; por ahora se usa API key local para admin.
 - La integracion con maquinas operativas es un link externo por `operational_machine_id`, porque este repo no contiene el backend Bocadia original.

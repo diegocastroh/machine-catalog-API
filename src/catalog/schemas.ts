@@ -71,11 +71,42 @@ export const sourceCreateSchema = z.object({
   crawl_allowed: z.boolean().optional().nullable()
 });
 
+export const sourceConfigCreateSchema = z.object({
+  manufacturer_id: z.string().uuid(),
+  base_url: z.string().url(),
+  allowed_domains: z.array(z.string().min(1)).min(1),
+  crawl_strategy: z.enum(['sitemap', 'product_urls', 'single_page']).default('sitemap'),
+  product_url_patterns: z.array(z.string()).default(['/products/', '/machines/', '/vending/']),
+  exclude_patterns: z.array(z.string()).default(['/blog/', '/news/', '/careers/']),
+  data_sources: z.array(z.enum(['html', 'jsonld', 'opengraph', 'pdf'])).default(['html', 'jsonld', 'opengraph', 'pdf']),
+  image_selectors: z.array(z.string()).default(["meta[property='og:image']", 'img']),
+  refresh_frequency_days: z.number().int().min(1).max(365).default(30),
+  max_pages_per_run: z.number().int().min(1).max(500).default(50),
+  delay_seconds: z.number().min(1).max(30).default(2),
+  dynamic_rendering: z.boolean().default(false),
+  status: z.enum(['active', 'inactive', 'blocked', 'needs_review']).default('active')
+});
+
+export const sourceConfigUpdateSchema = sourceConfigCreateSchema.partial();
+
 export const crawlJobCreateSchema = z.object({
   manufacturer_id: z.string().uuid().optional().nullable(),
+  source_config_id: z.string().uuid().optional().nullable(),
   job_type: z.enum(['discovery', 'manufacturer_crawl', 'product_page', 'pdf_extract', 'image_check', 'refresh']),
   source_page_id: z.string().uuid().optional().nullable(),
+  max_pages: z.number().int().min(1).max(500).optional(),
   created_by: z.string().uuid().optional().nullable()
+});
+
+export const reviewActionSchema = z.object({
+  reviewed_by: z.string().uuid().optional(),
+  notes: z.string().optional(),
+  edits: z.record(z.unknown()).optional()
+});
+
+export const mergeModelSchema = z.object({
+  target_model_id: z.string().uuid(),
+  reviewed_by: z.string().uuid().optional()
 });
 
 export const linkCreateSchema = z.object({
@@ -88,4 +119,5 @@ export type ModelCreate = z.infer<typeof modelCreateSchema>;
 export type ImageCreate = z.infer<typeof imageCreateSchema>;
 export type DocumentCreate = z.infer<typeof documentCreateSchema>;
 export type SourceCreate = z.infer<typeof sourceCreateSchema>;
+export type SourceConfigCreate = z.infer<typeof sourceConfigCreateSchema>;
 export type CrawlJobCreate = z.infer<typeof crawlJobCreateSchema>;

@@ -4,6 +4,7 @@ import type {
   ImageCreate,
   ManufacturerCreate,
   ModelCreate,
+  SourceConfigCreate,
   SourceCreate
 } from './schemas.js';
 
@@ -30,10 +31,26 @@ export type CatalogStore = {
   listModelDocuments(modelId: string, publicOnly?: boolean): Promise<any[]>;
   createSource(input: SourceCreate): Promise<any>;
   updateSource(id: string, input: Partial<SourceCreate>): Promise<any>;
+  listSources(): Promise<any[]>;
+  getSource(id: string): Promise<any | null>;
+  createSourceConfig(input: SourceConfigCreate): Promise<any>;
+  getSourceConfig(id: string): Promise<any | null>;
+  updateSourceConfig(id: string, input: Partial<SourceConfigCreate>): Promise<any>;
   createCrawlJob(input: CrawlJobCreate): Promise<any>;
+  updateCrawlJob(id: string, input: Record<string, unknown>): Promise<any>;
   listCrawlJobs(): Promise<any[]>;
   getCrawlJob(id: string): Promise<any | null>;
+  addCrawlJobLog(jobId: string, level: string, message: string, metadata?: Record<string, unknown>): Promise<any>;
+  listCrawlJobLogs(jobId: string): Promise<any[]>;
   reviewQueue(): Promise<any>;
+  getReviewQueueItem(id: string): Promise<any | null>;
+  approveReviewQueueItem(id: string, reviewedBy?: string, edits?: Record<string, unknown>): Promise<any>;
+  rejectReviewQueueItem(id: string, reviewedBy?: string, notes?: string): Promise<any>;
+  editReviewQueueItem(id: string, edits: Record<string, unknown>): Promise<any>;
+  listDuplicates(): Promise<any[]>;
+  createDuplicateCandidate(input: Record<string, unknown>): Promise<any>;
+  mergeModel(sourceModelId: string, targetModelId: string, reviewedBy?: string): Promise<any>;
+  persistCrawlerResult(jobId: string, result: Record<string, any>): Promise<void>;
   linkMachineToCatalog(operationalMachineId: string, catalogModelId: string): Promise<any>;
   unlinkMachine(operationalMachineId: string): Promise<void>;
 };

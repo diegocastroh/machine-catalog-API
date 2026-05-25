@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "eslint src tests --ext .ts"
+    "lint": "eslint src tests --ext .ts",
+    "test:worker": "python -m pytest workers/scraper/tests"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",

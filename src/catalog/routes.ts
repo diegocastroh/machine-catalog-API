@@ -9,15 +9,21 @@ import {
   linkCreateSchema,
   manufacturerCreateSchema,
   manufacturerUpdateSchema,
+  mergeModelSchema,
   modelCreateSchema,
   modelUpdateSchema,
+  reviewActionSchema,
+  sourceConfigCreateSchema,
+  sourceConfigUpdateSchema,
   sourceCreateSchema
 } from './schemas.js';
 import type { CatalogStore } from './store.js';
+import type { CrawlerRunner } from './crawler-runner.js';
 
 type RouteOptions = {
   store: CatalogStore;
   adminApiKey: string;
+  crawlerRunner?: CrawlerRunner;
 };
 
 export async function registerCatalogRoutes(app: FastifyInstance, options: RouteOptions): Promise<void> {
@@ -152,9 +158,46 @@ export async function registerCatalogRoutes(app: FastifyInstance, options: Route
     return { success: true, data: await options.store.updateSource(id, sourceCreateSchema.partial().parse(request.body)) };
   });
 
+  app.get('/api/v1/admin/catalog/sources', async (request) => {
+    requireAdmin(request);
+    return { success: true, data: await options.store.listSources() };
+  });
+
+  app.get('/api/v1/admin/catalog/sources/:id', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const source = await options.store.getSource(id);
+    if (!source) throw httpError(404, 'Source not found');
+    return { success: true, data: source };
+  });
+
+  app.post('/api/v1/admin/catalog/source-configs', async (request) => {
+    requireAdmin(request);
+    return { success: true, data: await options.store.createSourceConfig(sourceConfigCreateSchema.parse(request.body)) };
+  });
+
+  app.patch('/api/v1/admin/catalog/source-configs/:id', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return { success: true, data: await options.store.updateSourceConfig(id, sourceConfigUpdateSchema.parse(request.body)) };
+  });
+
   app.post('/api/v1/admin/catalog/crawl-jobs', async (request) => {
     requireAdmin(request);
     return { success: true, data: await options.store.createCrawlJob(crawlJobCreateSchema.parse(request.body)) };
+  });
+
+  app.post('/api/v1/admin/catalog/crawl-jobs/:id/run', async (request) => {
+    requireAdmin(request);
+    if (!options.crawlerRunner) throw httpError(503, 'Crawler runner is not configured');
+    const { id } = idParamsSchema.parse(request.params);
+    return { success: true, data: await options.crawlerRunner.run(id) };
+  });
+
+  app.get('/api/v1/admin/catalog/crawl-jobs/:id/logs', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    return { success: true, data: await options.store.listCrawlJobLogs(id) };
   });
 
   app.get('/api/v1/admin/catalog/crawl-jobs', async (request) => {
@@ -173,6 +216,47 @@ export async function registerCatalogRoutes(app: FastifyInstance, options: Route
   app.get('/api/v1/admin/catalog/review-queue', async (request) => {
     requireAdmin(request);
     return { success: true, data: await options.store.reviewQueue() };
+  });
+
+  app.get('/api/v1/admin/catalog/review-queue/:id', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const item = await options.store.getReviewQueueItem(id);
+    if (!item) throw httpError(404, 'Review queue item not found');
+    return { success: true, data: item };
+  });
+
+  app.post('/api/v1/admin/catalog/review-queue/:id/approve', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const body = reviewActionSchema.parse(request.body ?? {});
+    return { success: true, data: await options.store.approveReviewQueueItem(id, body.reviewed_by, body.edits) };
+  });
+
+  app.post('/api/v1/admin/catalog/review-queue/:id/reject', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const body = reviewActionSchema.parse(request.body ?? {});
+    return { success: true, data: await options.store.rejectReviewQueueItem(id, body.reviewed_by, body.notes) };
+  });
+
+  app.post('/api/v1/admin/catalog/review-queue/:id/edit', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const body = reviewActionSchema.parse(request.body ?? {});
+    return { success: true, data: await options.store.editReviewQueueItem(id, body.edits ?? {}) };
+  });
+
+  app.get('/api/v1/admin/catalog/duplicates', async (request) => {
+    requireAdmin(request);
+    return { success: true, data: await options.store.listDuplicates() };
+  });
+
+  app.post('/api/v1/admin/catalog/machine-models/:id/merge', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const body = mergeModelSchema.parse(request.body ?? {});
+    return { success: true, data: await options.store.mergeModel(id, body.target_model_id, body.reviewed_by) };
   });
 
   app.post('/api/v1/machines/from-catalog/:id', async (request) => {

@@ -18,6 +18,10 @@ class InMemoryCatalogStore implements CatalogStore {
   images: any[] = [];
   documents: any[] = [];
   jobs: any[] = [];
+  sources: any[] = [];
+  sourceConfigs: any[] = [];
+  logs: any[] = [];
+  duplicates: any[] = [];
 
   async listCategories() {
     return this.categories;
@@ -120,16 +124,48 @@ class InMemoryCatalogStore implements CatalogStore {
   }
 
   async createSource(input: SourceCreate) {
-    return { id: randomUUID(), ...input };
+    const source = { id: randomUUID(), ...input };
+    this.sources.push(source);
+    return source;
   }
 
   async updateSource(id: string, input: Partial<SourceCreate>) {
     return { id, ...input };
   }
 
+  async listSources() {
+    return this.sources;
+  }
+
+  async getSource(id: string) {
+    return this.sources.find((source) => source.id === id) ?? null;
+  }
+
+  async createSourceConfig(input: any) {
+    const config = { id: randomUUID(), ...input };
+    this.sourceConfigs.push(config);
+    return config;
+  }
+
+  async getSourceConfig(id: string) {
+    return this.sourceConfigs.find((config) => config.id === id) ?? null;
+  }
+
+  async updateSourceConfig(id: string, input: any) {
+    const config = await this.getSourceConfig(id);
+    Object.assign(config, input);
+    return config;
+  }
+
   async createCrawlJob(input: CrawlJobCreate) {
     const job = { id: randomUUID(), status: 'queued', ...input };
     this.jobs.push(job);
+    return job;
+  }
+
+  async updateCrawlJob(id: string, input: Record<string, unknown>) {
+    const job = await this.getCrawlJob(id);
+    Object.assign(job, input);
     return job;
   }
 
@@ -141,9 +177,53 @@ class InMemoryCatalogStore implements CatalogStore {
     return this.jobs.find((job) => job.id === id) ?? null;
   }
 
+  async addCrawlJobLog(jobId: string, level: string, message: string, metadata: Record<string, unknown> = {}) {
+    const log = { id: randomUUID(), crawl_job_id: jobId, level, message, metadata };
+    this.logs.push(log);
+    return log;
+  }
+
+  async listCrawlJobLogs(jobId: string) {
+    return this.logs.filter((log) => log.crawl_job_id === jobId);
+  }
+
   async reviewQueue() {
     return { manufacturers: this.manufacturers, models: this.models.filter((model) => model.status === 'pending_review') };
   }
+
+  async getReviewQueueItem(id: string) {
+    return this.models.find((model) => model.id === id) ?? null;
+  }
+
+  async approveReviewQueueItem(id: string) {
+    return this.approveModel(id);
+  }
+
+  async rejectReviewQueueItem(id: string) {
+    return this.rejectModel(id);
+  }
+
+  async editReviewQueueItem(id: string, edits: Record<string, unknown>) {
+    const item = await this.getReviewQueueItem(id);
+    Object.assign(item, edits);
+    return item;
+  }
+
+  async listDuplicates() {
+    return this.duplicates;
+  }
+
+  async createDuplicateCandidate(input: Record<string, unknown>) {
+    const duplicate = { id: randomUUID(), ...input };
+    this.duplicates.push(duplicate);
+    return duplicate;
+  }
+
+  async mergeModel(sourceModelId: string, targetModelId: string) {
+    return { source_model_id: sourceModelId, target_model_id: targetModelId, status: 'merged' };
+  }
+
+  async persistCrawlerResult(_jobId: string, _result: Record<string, any>) {}
 
   async linkMachineToCatalog(operationalMachineId: string, catalogModelId: string) {
     return { id: randomUUID(), operational_machine_id: operationalMachineId, catalog_model_id: catalogModelId };
@@ -195,5 +275,5 @@ describe('catalog routes', () => {
     expect(visible.json().data).toHaveLength(1);
 
     await app.close();
-  });
+  }, 15000);
 });

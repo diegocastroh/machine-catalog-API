@@ -4,6 +4,8 @@ export type AppConfig = {
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   adminApiKey: string;
+  pythonExecutable: string;
+  scraperOutputDir: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -14,7 +16,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host: env.HOST ?? '0.0.0.0',
     supabaseUrl: requireEnv(env, 'SUPABASE_URL'),
     supabaseServiceRoleKey: requireEnv(env, 'SUPABASE_SERVICE_ROLE_KEY'),
-    adminApiKey: requireEnv(env, 'ADMIN_API_KEY')
+    adminApiKey: requireEnv(env, 'ADMIN_API_KEY'),
+    pythonExecutable: env.PYTHON_EXECUTABLE ?? 'python',
+    scraperOutputDir: env.SCRAPER_OUTPUT_DIR ?? '.scraper-output'
   };
 }
 

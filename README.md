@@ -13,17 +13,22 @@ API local para consultar y administrar un catalogo global de fabricantes y model
 - Endpoints admin para fabricantes, modelos, aprobar/rechazar, imagenes, documentos, fuentes, crawl jobs y cola de revision.
 - Endpoints de link con maquina operativa por `operational_machine_id`.
 - Normalizador inicial para categorias, dimensiones, unidades, protocolos, conectividad, URLs y confidence score.
+- Worker Python/Scrapy local para fuentes configuradas, robots.txt, AutoThrottle, JSON-LD, OpenGraph, HTML, imagenes y PDFs enlazados.
+- Cola de revision para extractions normalizadas, merge/deduplicacion y logs de crawl.
 - OpenAPI/Swagger en `/docs`.
 
 ## Requisitos
 
 - Node.js 22+
+- Python 3.11+
 - Una key backend de Supabase. Usa `SUPABASE_SERVICE_ROLE_KEY` solo en servidor local/backend. No la expongas en frontend.
 
 ## Configuracion local
 
 ```bash
 npm install
+python -m pip install -r workers/scraper/requirements.txt
+python -m playwright install chromium
 copy .env.example .env
 ```
 
@@ -35,6 +40,8 @@ HOST=0.0.0.0
 SUPABASE_URL=https://yptzopnarugsoighqnph.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=...
 ADMIN_API_KEY=...
+PYTHON_EXECUTABLE=python
+SCRAPER_OUTPUT_DIR=.scraper-output
 ```
 
 Ejecutar en local:
@@ -76,11 +83,23 @@ Admin, requieren header `x-admin-api-key`:
 - `POST /api/v1/admin/catalog/machine-models/:id/images`
 - `POST /api/v1/admin/catalog/machine-models/:id/documents`
 - `POST /api/v1/admin/catalog/sources`
+- `GET /api/v1/admin/catalog/sources`
+- `GET /api/v1/admin/catalog/sources/:id`
 - `PATCH /api/v1/admin/catalog/sources/:id`
+- `POST /api/v1/admin/catalog/source-configs`
+- `PATCH /api/v1/admin/catalog/source-configs/:id`
 - `POST /api/v1/admin/catalog/crawl-jobs`
 - `GET /api/v1/admin/catalog/crawl-jobs`
 - `GET /api/v1/admin/catalog/crawl-jobs/:id`
+- `POST /api/v1/admin/catalog/crawl-jobs/:id/run`
+- `GET /api/v1/admin/catalog/crawl-jobs/:id/logs`
 - `GET /api/v1/admin/catalog/review-queue`
+- `GET /api/v1/admin/catalog/review-queue/:id`
+- `POST /api/v1/admin/catalog/review-queue/:id/approve`
+- `POST /api/v1/admin/catalog/review-queue/:id/reject`
+- `POST /api/v1/admin/catalog/review-queue/:id/edit`
+- `GET /api/v1/admin/catalog/duplicates`
+- `POST /api/v1/admin/catalog/machine-models/:id/merge`
 
 Integracion operativa:
 
@@ -97,20 +116,47 @@ curl -X POST http://localhost:3000/api/v1/admin/catalog/manufacturers \
   -d "{\"name\":\"Necta\",\"country\":\"Italy\",\"website_url\":\"https://www.evocagroup.com\"}"
 ```
 
+## Ejemplo de fuente y crawl local
+
+1. Crear source config:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/admin/catalog/source-configs \
+  -H "content-type: application/json" \
+  -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -d "{\"manufacturer_id\":\"MANUFACTURER_UUID\",\"base_url\":\"https://example.com/products/opera-touch\",\"allowed_domains\":[\"example.com\"],\"crawl_strategy\":\"single_page\",\"max_pages_per_run\":10,\"delay_seconds\":2}"
+```
+
+2. Crear crawl job:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/admin/catalog/crawl-jobs \
+  -H "content-type: application/json" \
+  -H "x-admin-api-key: $ADMIN_API_KEY" \
+  -d "{\"manufacturer_id\":\"MANUFACTURER_UUID\",\"source_config_id\":\"SOURCE_CONFIG_UUID\",\"job_type\":\"product_page\",\"max_pages\":10}"
+```
+
+3. Ejecutar job local:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/admin/catalog/crawl-jobs/CRAWL_JOB_UUID/run \
+  -H "x-admin-api-key: $ADMIN_API_KEY"
+```
+
+El worker respeta robots.txt mediante Scrapy, usa AutoThrottle, limita concurrencia por dominio y deja todo resultado automatico en `normalized_extractions` para revision. Playwright solo se usa cuando `dynamic_rendering=true` en la source config.
+
 ## Validacion
 
 ```bash
 npm run typecheck
 npm run lint
 npm test
+npm run test:worker
 npm run build
 ```
 
 ## Alcance pendiente
 
-- Worker real de scraping con Scrapy/Playwright.
-- Robots.txt checker ejecutable por job.
-- Extraccion real de HTML, JSON-LD, Open Graph y PDF.
 - Panel administrativo visual.
 - RBAC integrado con un proveedor de identidad real.
 - Despliegue Cloud Run. Para esta fase se dejo solo ejecucion local.
