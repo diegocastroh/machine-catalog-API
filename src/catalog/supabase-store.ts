@@ -263,11 +263,18 @@ export class SupabaseCatalogStore implements CatalogStore {
   }
 
   async reviewQueue(): Promise<any> {
-    const [manufacturers, models] = await Promise.all([
+    const [manufacturers, models, extractions] = await Promise.all([
       this.selectMany(this.client.from('machine_manufacturers').select('*').eq('status', 'pending_review').is('deleted_at', null)),
-      this.selectMany(this.client.from('machine_catalog_model_details').select('*').eq('status', 'pending_review').is('deleted_at', null))
+      this.selectMany(this.client.from('machine_catalog_model_details').select('*').eq('status', 'pending_review').is('deleted_at', null)),
+      this.selectMany(
+        this.client
+          .from('normalized_extractions')
+          .select('*, raw_extractions(source_page_id, crawl_job_id, source_pages(url, domain))')
+          .not('validation_flags', 'cs', '["rejected"]')
+          .order('created_at', { ascending: false })
+      )
     ]);
-    return { manufacturers, models };
+    return { manufacturers, models, extractions };
   }
 
   async getReviewQueueItem(id: string): Promise<any | null> {
