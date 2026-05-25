@@ -23,9 +23,10 @@ export class LocalCrawlerRunner implements CrawlerRunner {
     const sourceConfig = await this.options.store.getSourceConfig(job.source_config_id);
     if (!sourceConfig) throw new Error('Source config not found');
 
-    await mkdir(this.options.outputDir, { recursive: true });
-    const inputPath = path.join(this.options.outputDir, `${jobId}.input.json`);
-    const outputPath = path.join(this.options.outputDir, `${jobId}.output.jsonl`);
+    const outputDir = path.resolve(this.options.outputDir);
+    await mkdir(outputDir, { recursive: true });
+    const inputPath = path.join(outputDir, `${jobId}.input.json`);
+    const outputPath = path.join(outputDir, `${jobId}.output.jsonl`);
     const config = {
       job_id: jobId,
       output_path: outputPath,
