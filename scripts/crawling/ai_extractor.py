@@ -115,16 +115,20 @@ def extract_with_ollama(
     page_text: str,
     current: dict[str, Any],
     timeout: float,
+    num_ctx: int | None = None,
 ) -> dict[str, Any]:
     endpoint = base_url.rstrip("/") + "/api/chat"
     prompt = build_prompt(fabricante, modelo, url, page_text, current)
+    options: dict[str, Any] = {"temperature": 0}
+    if num_ctx:
+        options["num_ctx"] = num_ctx
     response = requests.post(
         endpoint,
         json={
             "model": model,
             "stream": False,
             "format": AI_SCHEMA,
-            "options": {"temperature": 0},
+            "options": options,
             "messages": [
                 {
                     "role": "system",

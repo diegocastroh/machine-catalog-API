@@ -87,6 +87,7 @@ Flags de IA:
 - `--ai-base-url`: endpoint local de Ollama, por defecto `http://localhost:11434`.
 - `--ai-timeout`: timeout por fila para la llamada IA.
 - `--ai-max-chars`: maximo de caracteres enviados al modelo por fila.
+- `--ai-num-ctx`: ventana de contexto de Ollama; usa `4096` o `8192` para reducir presion de VRAM/RAM.
 
 Reanudar:
 

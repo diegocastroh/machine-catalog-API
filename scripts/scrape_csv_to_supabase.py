@@ -928,6 +928,7 @@ def apply_ai_enrichment(
     base_url: str,
     timeout: float,
     max_chars: int,
+    num_ctx: int | None,
 ) -> tuple[dict[str, Any], list[str]]:
     if provider != "ollama":
         raise RuntimeError(f"Unsupported AI provider: {provider}")
@@ -945,6 +946,7 @@ def apply_ai_enrichment(
         page_text=page_text,
         current=datos,
         timeout=timeout,
+        num_ctx=num_ctx,
     )
     return merge_ai_extraction(datos, ai)
 
@@ -965,6 +967,12 @@ def main() -> int:
     parser.add_argument("--ai-base-url", default="http://localhost:11434")
     parser.add_argument("--ai-timeout", type=float, default=90.0)
     parser.add_argument("--ai-max-chars", type=int, default=24000)
+    parser.add_argument(
+        "--ai-num-ctx",
+        type=int,
+        default=None,
+        help="Ollama context window. Use 4096 or 8192 to reduce VRAM/RAM pressure.",
+    )
     parser.add_argument(
         "--ai-fallback-below-quality",
         type=float,
@@ -1047,6 +1055,7 @@ def main() -> int:
                         base_url=args.ai_base_url,
                         timeout=args.ai_timeout,
                         max_chars=args.ai_max_chars,
+                        num_ctx=args.ai_num_ctx,
                     )
                 except Exception as ai_exc:
                     ai_warnings = [f"ai_error:{ai_exc}"]

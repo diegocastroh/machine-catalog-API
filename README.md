@@ -206,6 +206,12 @@ python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-
 
 La IA rellena campos faltantes y marca conflictos como `ai_conflict:*`; esos conflictos bajan la confianza para que el registro quede en revision.
 
+Para reducir uso de RAM/VRAM con Ollama:
+
+```bash
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --ai-mode always --ai-model qwen2.5:7b-instruct --ai-num-ctx 4096 --ai-max-chars 4000 --ai-timeout 240 --start-row 1 --limit 20 --verbose
+```
+
 ## Consultas rapidas
 
 Local:
