@@ -48,6 +48,50 @@ CATEGORY_MAP = {
     "industrial": "industrial",
 }
 
+COOKIE_TEXT_MARKERS = [
+    "gestionar el consentimiento",
+    "política de cookies",
+    "politica de cookies",
+    "política de privacidad",
+    "politica de privacidad",
+    "almacenar y/o acceder",
+    "consentimiento de las cookies",
+    "utilizamos cookies",
+    "we use cookies",
+    "cookie consent",
+    "privacy policy",
+    "almacenamiento o acceso técnico",
+    "almacenamiento o acceso tecnico",
+    "abonado o usuario",
+    "fines estadísticos",
+    "fines estadisticos",
+    "finalidad legítima",
+    "finalidad legitima",
+    "comunicación a través",
+    "comunicacion a traves",
+    "proveedores",
+    "preferencias",
+    "estadísticas",
+    "estadisticas",
+    "marketing",
+]
+
+PRODUCT_TEXT_MARKERS = [
+    "vending",
+    "machine",
+    "snack",
+    "drink",
+    "coffee",
+    "bluetec",
+    "technical",
+    "specifications",
+    "features",
+    "products",
+    "modelo",
+    "producto",
+    "maquina",
+]
+
 
 @dataclass
 class Counters:
@@ -96,14 +140,16 @@ def normalize_json(value: Any) -> dict[str, Any] | None:
 
 def infer_tipo_maquina(text: str) -> str | None:
     lowered = text.lower()
-    if any(x in lowered for x in ["coffee", "café", "cafe", "espresso", "capuccino", "cappuccino", "vitro"]):
-        return "coffee"
-    if any(x in lowered for x in ["snack", "spiral", "espiral", "chips", "chocolate", "candy", "dulces"]):
-        return "snack"
+    if any(x in lowered for x in ["snacks-and-drinks", "snack and drink", "snacks and drinks"]):
+        return "combo"
+    if any(x in lowered for x in ["combo", "comboplus", "easycombo"]):
+        return "combo"
     if any(x in lowered for x in ["drink", "beverage", "bebida", "soda", "can", "bottle", "lata", "botella"]):
         return "drink"
-    if any(x in lowered for x in ["combo", "snack and drink", "snacks and drinks"]):
-        return "combo"
+    if any(x in lowered for x in ["snack", "spiral", "espiral", "chips", "chocolate", "candy", "dulces"]):
+        return "snack"
+    if any(x in lowered for x in ["coffee", "café", "cafe", "espresso", "capuccino", "cappuccino", "vitro"]):
+        return "coffee"
     if any(x in lowered for x in ["frozen", "ice cream", "helado", "congelado"]):
         return "frozen"
     if "locker" in lowered:
@@ -111,6 +157,29 @@ def infer_tipo_maquina(text: str) -> str | None:
     if any(x in lowered for x in ["food", "fresh food", "comida", "meal"]):
         return "food"
     return None
+
+
+def remove_cookie_noise(text: str | None) -> str:
+    if not text:
+        return ""
+    cleaned_lines = []
+    skipping_cookie_block = False
+    for line in str(text).splitlines():
+        compact = " ".join(line.split())
+        lowered = compact.lower()
+        if not compact:
+            continue
+        if skipping_cookie_block and not any(marker in lowered for marker in PRODUCT_TEXT_MARKERS):
+            continue
+        if skipping_cookie_block and any(marker in lowered for marker in PRODUCT_TEXT_MARKERS):
+            skipping_cookie_block = False
+        if any(marker in lowered for marker in COOKIE_TEXT_MARKERS):
+            skipping_cookie_block = True
+            continue
+        if lowered in {"aceptar", "rechazar", "configurar", "guardar preferencias", "accept", "reject", "preferences"}:
+            continue
+        cleaned_lines.append(compact)
+    return "\n".join(cleaned_lines)
 
 
 def category_for(tipo: str | None, model_name: str, specs: dict[str, Any]) -> str:
@@ -280,7 +349,7 @@ def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
     html = response.text
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
-    text = soup.get_text(" ", strip=True)[:12000]
+    text = remove_cookie_noise(soup.get_text("\n", strip=True))[:12000]
     tipo = infer_tipo_maquina(f"{fabricante} {modelo} {title} {text}")
     return {
         "fabricante": fabricante,
@@ -326,7 +395,8 @@ def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, An
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
     markdown, html = asyncio.run(crawl4ai_fetch(url))
-    combined = f"{fabricante} {modelo} {markdown or ''}"
+    markdown = remove_cookie_noise(markdown)
+    combined = f"{fabricante} {modelo} {markdown}"
     return {
         "fabricante": fabricante,
         "modelo_base": modelo,
@@ -513,8 +583,34 @@ def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url:
     crawl4ai = datos.get("_crawl4ai_extract") or {}
     sample = basic.get("text_sample") or crawl4ai.get("markdown_sample")
     if sample:
-        compact = " ".join(str(sample).split())
+        compact = relevant_sample(str(sample), modelo)
         print(f"[{row_number}] Extracto: {compact[:700]}")
+
+
+def relevant_sample(text: str, modelo: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        compact_line = " ".join(line.split())
+        lowered_line = compact_line.lower()
+        if not compact_line:
+            continue
+        if compact_line.startswith(("* [", "[ ![", "![", "Toggle navigation")):
+            continue
+        if lowered_line.startswith(("spare parts", "corporation", "history", "contact", "news")):
+            continue
+        if compact_line.count("http") >= 2 or compact_line.count("](") >= 2:
+            continue
+        lines.append(compact_line)
+    compact = " ".join(lines) if lines else " ".join(text.split())
+    lowered = compact.lower()
+    candidates = [modelo.lower()]
+    candidates.extend(word.lower() for word in re.split(r"[^a-zA-Z0-9]+", modelo) if len(word) >= 4)
+    candidates.extend(["technical", "specifications", "features", "vending", "machine", "snack", "drink", "coffee"])
+    positions = [lowered.find(candidate) for candidate in candidates if candidate and lowered.find(candidate) >= 0]
+    if not positions:
+        return compact
+    start = max(min(positions) - 220, 0)
+    return compact[start:]
 
 
 def read_rows(csv_path: Path) -> list[dict[str, str]]:
