@@ -183,6 +183,12 @@ Probar sin guardar:
 python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 5 --dry-run
 ```
 
+Ver URL usada, imagen detectada, categoria y muestra del contenido:
+
+```bash
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 5 --dry-run --verbose
+```
+
 ## Consultas rapidas
 
 Local:

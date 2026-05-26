@@ -492,6 +492,31 @@ def save_to_supabase(
     return status
 
 
+def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url: str, datos: dict[str, Any]) -> None:
+    print("-" * 80)
+    print(f"[{row_number}] Fabricante: {fabricante}")
+    print(f"[{row_number}] Modelo: {modelo}")
+    print(f"[{row_number}] URL: {url}")
+    print(f"[{row_number}] Tipo: {datos.get('tipo_maquina')}")
+    print(f"[{row_number}] Categoria Supabase: {category_for(datos.get('tipo_maquina'), modelo, datos)}")
+    print(f"[{row_number}] Imagen: {datos.get('imagen_url')}")
+    physical = datos.get("especificaciones_fisicas") or {}
+    energy = datos.get("especificaciones_electricas") or {}
+    hardware = datos.get("componentes_hardware") or {}
+    if physical:
+        print(f"[{row_number}] Fisicas: {json.dumps(physical, ensure_ascii=False)}")
+    if energy:
+        print(f"[{row_number}] Electricas: {json.dumps(energy, ensure_ascii=False)}")
+    if hardware:
+        print(f"[{row_number}] Hardware: {json.dumps(hardware, ensure_ascii=False)}")
+    basic = datos.get("_basic_extract") or {}
+    crawl4ai = datos.get("_crawl4ai_extract") or {}
+    sample = basic.get("text_sample") or crawl4ai.get("markdown_sample")
+    if sample:
+        compact = " ".join(str(sample).split())
+        print(f"[{row_number}] Extracto: {compact[:700]}")
+
+
 def read_rows(csv_path: Path) -> list[dict[str, str]]:
     with csv_path.open("r", encoding="utf-8-sig", newline="") as file:
         reader = csv.DictReader(file)
@@ -511,6 +536,7 @@ def main() -> int:
     parser.add_argument("--sleep", type=float, default=1.5)
     parser.add_argument("--mode", choices=["skip", "update"], default="update")
     parser.add_argument("--extractor", choices=["firecrawl", "crawl4ai", "basic"], default="firecrawl")
+    parser.add_argument("--verbose", action="store_true", help="Print extracted URL, image, category and text sample per row")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -559,6 +585,8 @@ def main() -> int:
                 datos = scrape_with_crawl4ai(url, fabricante, modelo)
             else:
                 datos = scrape_basic(url, fabricante, modelo)
+            if args.verbose:
+                print_extraction_preview(offset, fabricante, modelo, url, datos)
             if args.dry_run:
                 counters.dry_run += 1
                 status = "dry_run"

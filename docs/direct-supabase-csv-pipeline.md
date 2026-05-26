@@ -52,6 +52,12 @@ Modo prueba:
 python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --start-row 1 --limit 5 --dry-run
 ```
 
+Ver outputs de cada extraccion sin guardar:
+
+```powershell
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 5 --dry-run --verbose
+```
+
 Reanudar:
 
 ```powershell
