@@ -230,6 +230,12 @@ URL de produccion actual:
 
 - `https://machine-catalog-api-6eyaoobeya-uc.a.run.app`
 
+## Consumo desde Bocadia
+
+La guia completa para integrar este servicio desde Bocadia esta en:
+
+- `docs/bocadia-consumption-guide.md`
+
 ## Validacion
 
 ```bash
