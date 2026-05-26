@@ -68,6 +68,26 @@ python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-
 
 Con `--min-quality`, el script no guarda filas debajo del umbral. Con `--review-below-quality`, las filas guardadas debajo del umbral quedan como `pending_review`; por encima quedan `approved`.
 
+Ejecutar Crawl4AI con IA local en todas las filas:
+
+```powershell
+ollama pull qwen2.5:7b-instruct
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --ai-mode always --ai-model qwen2.5:7b-instruct --start-row 1 --limit 20 --verbose --review-below-quality 0.85
+```
+
+La IA local no reemplaza la extraccion por reglas: la complementa. Si encuentra campos que faltan, los agrega. Si contradice datos ya detectados por reglas, conserva el dato deterministico, agrega `ai_conflict:*` en warnings y baja la confianza para que el modelo quede en revision.
+
+Flags de IA:
+
+- `--ai-mode off`: no usa IA.
+- `--ai-mode fallback`: usa IA solo cuando el score por reglas esta debajo de `--ai-fallback-below-quality`.
+- `--ai-mode always`: usa IA en todas las filas.
+- `--ai-provider ollama`: proveedor local soportado.
+- `--ai-model`: modelo instalado en Ollama.
+- `--ai-base-url`: endpoint local de Ollama, por defecto `http://localhost:11434`.
+- `--ai-timeout`: timeout por fila para la llamada IA.
+- `--ai-max-chars`: maximo de caracteres enviados al modelo por fila.
+
 Reanudar:
 
 ```powershell

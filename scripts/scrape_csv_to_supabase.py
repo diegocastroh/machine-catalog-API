@@ -37,6 +37,7 @@ except ModuleNotFoundError:  # pragma: no cover - startup dependency message
     )
     raise
 
+from crawling.ai_extractor import extract_with_ollama, merge_ai_extraction
 from crawling.quality import quality_report
 
 
@@ -831,6 +832,12 @@ def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url:
             f"[{row_number}] Calidad: {quality.get('score')} "
             f"warnings={json.dumps(quality.get('warnings') or [], ensure_ascii=False)}"
         )
+    ai = datos.get("_ai_extract") or {}
+    if ai:
+        print(
+            f"[{row_number}] IA: confidence={ai.get('confidence')} "
+            f"uncertain={json.dumps(ai.get('uncertain_fields') or [], ensure_ascii=False)}"
+        )
     basic = datos.get("_basic_extract") or {}
     crawl4ai = datos.get("_crawl4ai_extract") or {}
     sample = basic.get("text_sample") or crawl4ai.get("markdown_sample")
@@ -889,6 +896,54 @@ def read_rows(csv_path: Path) -> list[dict[str, str]]:
         return list(reader)
 
 
+def extraction_text_for_ai(datos: dict[str, Any], max_chars: int) -> str:
+    crawl4ai = datos.get("_crawl4ai_extract") or {}
+    basic = datos.get("_basic_extract") or {}
+    text = crawl4ai.get("markdown_sample") or basic.get("text_sample") or ""
+    return str(text)[:max_chars]
+
+
+def should_use_ai(mode: str, quality: dict[str, Any], fallback_below: float) -> bool:
+    if mode == "always":
+        return True
+    if mode == "fallback":
+        score = quality.get("score")
+        return isinstance(score, (int, float)) and score < fallback_below
+    return False
+
+
+def apply_ai_enrichment(
+    datos: dict[str, Any],
+    *,
+    fabricante: str,
+    modelo: str,
+    url: str,
+    provider: str,
+    model: str | None,
+    base_url: str,
+    timeout: float,
+    max_chars: int,
+) -> tuple[dict[str, Any], list[str]]:
+    if provider != "ollama":
+        raise RuntimeError(f"Unsupported AI provider: {provider}")
+    if not model:
+        raise RuntimeError("AI model is required when AI mode is enabled. Use --ai-model.")
+    page_text = extraction_text_for_ai(datos, max_chars)
+    if not page_text.strip():
+        return datos, ["ai_skipped:empty_page_text"]
+    ai = extract_with_ollama(
+        base_url=base_url,
+        model=model,
+        fabricante=fabricante,
+        modelo=modelo,
+        url=url,
+        page_text=page_text,
+        current=datos,
+        timeout=timeout,
+    )
+    return merge_ai_extraction(datos, ai)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Scrape CSV rows and save catalog models directly in Supabase.")
     parser.add_argument("--csv", default=r"C:\Users\diego\Downloads\vending-machines-formateado.csv")
@@ -899,6 +954,18 @@ def main() -> int:
     parser.add_argument("--mode", choices=["skip", "update"], default="update")
     parser.add_argument("--extractor", choices=["firecrawl", "crawl4ai", "basic"], default="firecrawl")
     parser.add_argument("--verbose", action="store_true", help="Print extracted URL, image, category and text sample per row")
+    parser.add_argument("--ai-provider", choices=["ollama"], default="ollama")
+    parser.add_argument("--ai-model", default=None, help="Local Ollama model, for example qwen2.5:7b-instruct")
+    parser.add_argument("--ai-mode", choices=["off", "fallback", "always"], default="off")
+    parser.add_argument("--ai-base-url", default="http://localhost:11434")
+    parser.add_argument("--ai-timeout", type=float, default=90.0)
+    parser.add_argument("--ai-max-chars", type=int, default=24000)
+    parser.add_argument(
+        "--ai-fallback-below-quality",
+        type=float,
+        default=0.75,
+        help="Run AI in fallback mode when the rule-based quality score is below this value.",
+    )
     parser.add_argument(
         "--min-quality",
         type=float,
@@ -961,7 +1028,30 @@ def main() -> int:
                 datos = scrape_with_crawl4ai(url, fabricante, modelo)
             else:
                 datos = scrape_basic(url, fabricante, modelo)
+            pre_ai_quality = quality_report(original_url, url, modelo, datos)
+            ai_warnings: list[str] = []
+            if should_use_ai(args.ai_mode, pre_ai_quality, args.ai_fallback_below_quality):
+                try:
+                    datos, ai_warnings = apply_ai_enrichment(
+                        datos,
+                        fabricante=fabricante,
+                        modelo=modelo,
+                        url=url,
+                        provider=args.ai_provider,
+                        model=args.ai_model,
+                        base_url=args.ai_base_url,
+                        timeout=args.ai_timeout,
+                        max_chars=args.ai_max_chars,
+                    )
+                except Exception as ai_exc:
+                    ai_warnings = [f"ai_error:{ai_exc}"]
+                    datos["_ai_extract"] = {"error": str(ai_exc), "confidence": None, "uncertain_fields": []}
+                    print(f"[{offset}] {fabricante} / {modelo} -> ai_warning: {ai_exc}", file=sys.stderr)
             datos["_quality"] = quality_report(original_url, url, modelo, datos)
+            if ai_warnings:
+                datos["_quality"]["warnings"] = list(dict.fromkeys([*datos["_quality"]["warnings"], *ai_warnings]))
+                if any(warning.startswith(("ai_conflict:", "ai_error:")) for warning in ai_warnings):
+                    datos["_quality"]["score"] = min(datos["_quality"]["score"], max(args.review_below_quality - 0.01, 0))
             datos["_review_below_quality"] = args.review_below_quality
             if args.verbose:
                 print_extraction_preview(offset, fabricante, modelo, url, datos)

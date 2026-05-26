@@ -197,6 +197,15 @@ python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-
 
 `--min-quality` evita guardar extracciones demasiado debiles. `--review-below-quality` guarda modelos con baja confianza como `pending_review`; las extracciones sobre el umbral quedan `approved`.
 
+Ejecutar con IA local mediante Ollama en todas las filas:
+
+```bash
+ollama pull qwen2.5:7b-instruct
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --ai-mode always --ai-model qwen2.5:7b-instruct --start-row 1 --limit 20 --verbose --review-below-quality 0.85
+```
+
+La IA rellena campos faltantes y marca conflictos como `ai_conflict:*`; esos conflictos bajan la confianza para que el registro quede en revision.
+
 ## Consultas rapidas
 
 Local:
