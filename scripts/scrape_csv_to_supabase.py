@@ -9,6 +9,7 @@ Optional env: SERPER_API_KEY, FIRECRAWL_API_KEY.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import importlib.util
 import json
@@ -20,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
+
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 import requests
 from bs4 import BeautifulSoup
@@ -292,6 +295,53 @@ def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
     }
 
 
+async def crawl4ai_fetch(url: str) -> tuple[str | None, str | None]:
+    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+
+    browser_config = BrowserConfig(headless=True)
+    run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, markdown_generator=DefaultMarkdownGenerator())
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        result = await crawler.arun(url=url, config=run_config)
+    if not getattr(result, "success", True):
+        raise RuntimeError(getattr(result, "error_message", "Crawl4AI crawl failed"))
+    markdown = getattr(result, "markdown", None)
+    if hasattr(markdown, "fit_markdown"):
+        markdown_text = markdown.fit_markdown or getattr(markdown, "raw_markdown", None)
+    elif hasattr(markdown, "raw_markdown"):
+        markdown_text = markdown.raw_markdown
+    else:
+        markdown_text = str(markdown or "")
+    html = getattr(result, "html", None) or getattr(result, "cleaned_html", None)
+    return markdown_text, html
+
+
+def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
+    if importlib.util.find_spec("crawl4ai") is None:
+        raise RuntimeError(
+            "Crawl4AI no esta instalado. Ejecuta: python -m pip install -r scripts/requirements-supabase-pipeline.txt"
+        )
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+    markdown, html = asyncio.run(crawl4ai_fetch(url))
+    combined = f"{fabricante} {modelo} {markdown or ''}"
+    return {
+        "fabricante": fabricante,
+        "modelo_base": modelo,
+        "tipo_maquina": infer_tipo_maquina(combined),
+        "imagen_url": choose_best_image_from_html(html, url, fabricante, modelo),
+        "versiones_disponibles": [],
+        "especificaciones_fisicas": {},
+        "especificaciones_electricas": {},
+        "componentes_hardware": {},
+        "_crawl4ai_extract": {
+            "markdown_sample": (markdown or "")[:4000],
+        },
+    }
+
+
 def get_single(data: Any) -> dict[str, Any] | None:
     if isinstance(data, list):
         return data[0] if data else None
@@ -460,7 +510,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sleep", type=float, default=1.5)
     parser.add_argument("--mode", choices=["skip", "update"], default="update")
-    parser.add_argument("--extractor", choices=["firecrawl", "basic"], default="firecrawl")
+    parser.add_argument("--extractor", choices=["firecrawl", "crawl4ai", "basic"], default="firecrawl")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -505,6 +555,8 @@ def main() -> int:
                 raise RuntimeError(f"Invalid URL scheme: {url}")
             if args.extractor == "firecrawl":
                 datos = scrape_with_firecrawl(url, fabricante, modelo, firecrawl_key) or scrape_basic(url, fabricante, modelo)
+            elif args.extractor == "crawl4ai":
+                datos = scrape_with_crawl4ai(url, fabricante, modelo)
             else:
                 datos = scrape_basic(url, fabricante, modelo)
             if args.dry_run:

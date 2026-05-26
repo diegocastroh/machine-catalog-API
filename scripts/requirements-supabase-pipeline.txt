@@ -1,4 +1,6 @@
 beautifulsoup4==4.12.3
+chardet<6
+crawl4ai
 firecrawl-py
 requests==2.32.3
 supabase

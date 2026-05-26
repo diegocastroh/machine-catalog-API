@@ -162,6 +162,27 @@ python scripts/import-vending-sqlite.py --from-id 86 --to-id 113
 python scripts/import-vending-sqlite.py --dry-run
 ```
 
+## Scraping directo CSV -> Supabase
+
+Instalar dependencias del pipeline local:
+
+```bash
+python -m pip install -r scripts/requirements-supabase-pipeline.txt
+python -m playwright install chromium
+```
+
+Ejecutar con Crawl4AI local:
+
+```bash
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1
+```
+
+Probar sin guardar:
+
+```bash
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 5 --dry-run
+```
+
 ## Consultas rapidas
 
 Local:

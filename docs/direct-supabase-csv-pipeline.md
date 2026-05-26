@@ -5,7 +5,8 @@ Este pipeline lee `vending-machines-formateado.csv`, extrae datos con Firecrawl 
 ## Instalacion local
 
 ```powershell
-python -m pip install supabase requests beautifulsoup4 firecrawl-py
+python -m pip install -r scripts/requirements-supabase-pipeline.txt
+python -m playwright install chromium
 ```
 
 Variables esperadas en `.env`:
@@ -18,6 +19,26 @@ FIRECRAWL_API_KEY=...
 ```
 
 `SERPER_API_KEY` solo se usa si la columna `URL` viene vacia. `FIRECRAWL_API_KEY` activa extraccion estructurada; si falta, el script usa extraccion HTML basica.
+
+## Extractores
+
+Firecrawl:
+
+```powershell
+python scripts/scrape_csv_to_supabase.py --extractor firecrawl
+```
+
+Crawl4AI local y gratuito:
+
+```powershell
+python scripts/scrape_csv_to_supabase.py --extractor crawl4ai
+```
+
+HTML basico sin navegador:
+
+```powershell
+python scripts/scrape_csv_to_supabase.py --extractor basic
+```
 
 ## Ejecutar
 
