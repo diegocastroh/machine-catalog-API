@@ -74,6 +74,16 @@ COOKIE_TEXT_MARKERS = [
     "third-party features",
     "third party features",
     "close.svg",
+    "notice you can freely give",
+    "withdraw your consent",
+    "preferences panel",
+    "denying consent",
+    "accept all",
+    "reject all",
+    "learn more",
+    "notice",
+    "necessary measurement",
+    "0/1",
     "almacenamiento o acceso técnico",
     "almacenamiento o acceso tecnico",
     "abonado o usuario",
@@ -214,6 +224,9 @@ def is_probably_bad_image(url: str) -> bool:
         "icon",
         "sprite",
         "placeholder",
+        "trademark",
+        "brandmark",
+        "header",
         "blank",
         "spinner",
         "loading",
@@ -226,6 +239,16 @@ def is_probably_bad_image(url: str) -> bool:
         "x-twitter",
     ]
     return lowered.startswith("data:") or lowered.endswith((".svg", ".ico")) or any(x in lowered for x in bad_keywords)
+
+
+def first_http_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    matches = re.findall(r"https?://[^\s\"'<>]+", value)
+    if not matches:
+        return value.strip() or None
+    image_like = [match.rstrip(").,;") for match in matches if re.search(r"\.(?:jpg|jpeg|png|webp)(?:\?|$)", match, re.I)]
+    return (image_like[0] if image_like else matches[0]).rstrip(").,;")
 
 
 def score_image_url(url: str, fabricante: str, modelo: str) -> int:
@@ -258,7 +281,9 @@ def choose_best_image_from_html(html: str | None, base_url: str, fabricante: str
         for src in candidates:
             if not src:
                 continue
-            absolute = urljoin(base_url, src)
+            absolute = first_http_url(urljoin(base_url, src))
+            if not absolute:
+                continue
             if not is_probably_bad_image(absolute):
                 images.append(absolute)
     unique = list(dict.fromkeys(images))
@@ -348,7 +373,7 @@ No inventes datos. Si un valor no existe, usa null. La imagen debe ser una URL a
     json_data["tipo_maquina"] = json_data.get("tipo_maquina") or infer_tipo_maquina(f"{fabricante} {modelo} {markdown or ''}")
     image = json_data.get("imagen_url")
     if image:
-        image = urljoin(url, image)
+        image = first_http_url(urljoin(url, image))
     json_data["imagen_url"] = image if image and not is_probably_bad_image(image) else choose_best_image_from_html(html, url, fabricante, modelo)
     json_data.setdefault("versiones_disponibles", [])
     json_data.setdefault("especificaciones_fisicas", {})
@@ -369,7 +394,7 @@ def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
         "fabricante": fabricante,
         "modelo_base": modelo,
         "tipo_maquina": tipo,
-        "imagen_url": choose_best_image_from_html(html, url, fabricante, modelo),
+        "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
         "versiones_disponibles": [],
         "especificaciones_fisicas": {},
         "especificaciones_electricas": {},
@@ -415,7 +440,7 @@ def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, An
         "fabricante": fabricante,
         "modelo_base": modelo,
         "tipo_maquina": infer_tipo_maquina(combined),
-        "imagen_url": choose_best_image_from_html(html, url, fabricante, modelo),
+        "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
         "versiones_disponibles": [],
         "especificaciones_fisicas": {},
         "especificaciones_electricas": {},
@@ -560,6 +585,7 @@ def save_to_supabase(
     supabase.table("machine_model_specs").upsert(spec_payload(model_id, datos), on_conflict="machine_model_id").execute()
 
     image_url = datos.get("imagen_url")
+    image_url = first_http_url(image_url)
     if image_url and not image_exists(supabase, model_id, image_url):
         supabase.table("machine_model_images").insert(
             {
