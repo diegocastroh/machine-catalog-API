@@ -173,12 +173,12 @@ python scripts/check-machine.py "W-USI" --base-url http://localhost:3000 --detai
 Cloud Run:
 
 ```bash
-python scripts/check-machine.py "JL500" --base-url https://machine-catalog-api-533385883571.us-central1.run.app --limit 5
+python scripts/check-machine.py "JL500" --base-url https://machine-catalog-api-6eyaoobeya-uc.a.run.app --limit 5
 ```
 
 URL de produccion actual:
 
-- `https://machine-catalog-api-533385883571.us-central1.run.app`
+- `https://machine-catalog-api-6eyaoobeya-uc.a.run.app`
 
 ## Validacion
 
