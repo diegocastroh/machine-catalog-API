@@ -4,3 +4,11 @@ crawl4ai
 firecrawl-py
 requests==2.32.3
 supabase
+
+# Optional, only required when running with --verify-images (CLIP zero-shot).
+# Install with: python -m pip install open_clip_torch torch pillow numpy
+# torch wheels: pick the one matching your CUDA / CPU setup from pytorch.org.
+# open_clip_torch
+# torch
+# pillow
+# numpy

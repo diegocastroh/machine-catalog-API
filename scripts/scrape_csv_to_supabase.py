@@ -37,9 +37,15 @@ except ModuleNotFoundError:  # pragma: no cover - startup dependency message
     )
     raise
 
+from crawling import cache as page_cache
 from crawling.ai_extractor import extract_with_ollama, merge_ai_extraction
+from crawling.images import choose_verified_image
+from crawling.jsonld import extract_from_html as extract_jsonld_from_html, merge_into as merge_jsonld_into
 from crawling.quality import quality_report
-from crawling.resolvers import resolve_product_url as resolve_product_url_from_module
+from crawling.resolvers import (
+    resolve_best_product_url as resolve_best_product_url_from_module,
+    resolve_product_url as resolve_product_url_from_module,
+)
 from crawling.specs import (
     apply_sielaff_public_series_specs as apply_sielaff_public_series_specs_from_module,
     extract_specs_from_text as extract_specs_from_text_from_module,
@@ -414,6 +420,15 @@ def is_sielaff_public_series_model(modelo: str) -> bool:
     return lowered.startswith("siline ") and any(token in lowered for token in [" gf ", "snack", "combi", " rp", " lift "])
 
 
+def _candidate_image_list(html: str | None, base_url: str, fabricante: str, modelo: str) -> list[str]:
+    try:
+        from crawling.images import collect_image_candidates
+
+        return collect_image_candidates(html, base_url, fabricante, modelo)
+    except Exception:
+        return []
+
+
 def scrape_with_firecrawl(url: str, fabricante: str, modelo: str, firecrawl_api_key: str | None) -> dict[str, Any] | None:
     if not firecrawl_api_key or importlib.util.find_spec("firecrawl") is None:
         return None
@@ -458,30 +473,52 @@ No inventes datos. Si un valor no existe, usa null. La imagen debe ser una URL a
     if image:
         image = first_http_url(urljoin(url, image))
     json_data["imagen_url"] = image if image and not is_probably_bad_image(image) else choose_best_image_from_html(html, url, fabricante, modelo)
+    candidates = _candidate_image_list(html, url, fabricante, modelo)
+    if json_data["imagen_url"] and json_data["imagen_url"] not in candidates:
+        candidates = [json_data["imagen_url"], *candidates]
+    json_data["_image_candidates"] = candidates
     json_data.setdefault("versiones_disponibles", [])
     json_data.setdefault("especificaciones_fisicas", {})
     json_data.setdefault("especificaciones_electricas", {})
     json_data.setdefault("componentes_hardware", {})
+    if html:
+        try:
+            page_cache.save(url, html=html, markdown=markdown, source="firecrawl")
+        except Exception:
+            pass
+        jsonld = extract_jsonld_from_html(html, url, fabricante, modelo)
+        if jsonld:
+            merge_jsonld_into(json_data, jsonld)
     return json_data
 
 
-def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
-    response = requests.get(url, timeout=30, headers={"user-agent": "MachineCatalogImporter/1.0"})
-    response.raise_for_status()
-    html = response.text
+def scrape_basic(
+    url: str,
+    fabricante: str,
+    modelo: str,
+    *,
+    use_cache: bool = True,
+    cache_ttl: int = page_cache.DEFAULT_TTL_SECONDS,
+) -> dict[str, Any]:
+    html, fetch_source = basic_fetch_cached(url, use_cache=use_cache, ttl_seconds=cache_ttl)
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     text = remove_cookie_noise(soup.get_text("\n", strip=True))[:12000]
     tipo = infer_tipo_maquina(f"{fabricante} {modelo} {title} {text}")
-    return {
+    payload: dict[str, Any] = {
         "fabricante": fabricante,
         "modelo_base": modelo,
         "tipo_maquina": tipo,
         "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
+        "_image_candidates": _candidate_image_list(html, url, fabricante, modelo),
         "versiones_disponibles": [],
         **extract_specs_from_text_from_module(text),
-        "_basic_extract": {"title": title, "text_sample": text[:2000]},
+        "_basic_extract": {"title": title, "text_sample": text[:2000], "fetch_source": fetch_source},
     }
+    jsonld = extract_jsonld_from_html(html, url, fabricante, modelo)
+    if jsonld:
+        merge_jsonld_into(payload, jsonld)
+    return payload
 
 
 async def crawl4ai_fetch(url: str) -> tuple[str | None, str | None]:
@@ -505,7 +542,40 @@ async def crawl4ai_fetch(url: str) -> tuple[str | None, str | None]:
     return markdown_text, html
 
 
-def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
+def crawl4ai_fetch_cached(url: str, *, use_cache: bool, ttl_seconds: int) -> tuple[str | None, str | None, str]:
+    """Wrap crawl4ai_fetch with a disk cache. Returns (markdown, html, source)."""
+    if use_cache:
+        cached = page_cache.load(url, ttl_seconds=ttl_seconds)
+        if cached is not None:
+            return cached.markdown, cached.html, f"cache(age={int(cached.age_seconds)}s)"
+    markdown, html = asyncio.run(crawl4ai_fetch(url))
+    if use_cache:
+        page_cache.save(url, html=html, markdown=markdown, source="crawl4ai")
+    return markdown, html, "crawl4ai"
+
+
+def basic_fetch_cached(url: str, *, use_cache: bool, ttl_seconds: int) -> tuple[str, str]:
+    """Wrap a requests.get with the same disk cache. Returns (html, source)."""
+    if use_cache:
+        cached = page_cache.load(url, ttl_seconds=ttl_seconds)
+        if cached is not None and cached.html:
+            return cached.html, f"cache(age={int(cached.age_seconds)}s)"
+    response = requests.get(url, timeout=30, headers={"user-agent": "MachineCatalogImporter/1.0"})
+    response.raise_for_status()
+    html = response.text
+    if use_cache:
+        page_cache.save(url, html=html, markdown=None, source="requests")
+    return html, "requests"
+
+
+def scrape_with_crawl4ai(
+    url: str,
+    fabricante: str,
+    modelo: str,
+    *,
+    use_cache: bool = True,
+    cache_ttl: int = page_cache.DEFAULT_TTL_SECONDS,
+) -> dict[str, Any]:
     if importlib.util.find_spec("crawl4ai") is None:
         raise RuntimeError(
             "Crawl4AI no esta instalado. Ejecuta: python -m pip install -r scripts/requirements-supabase-pipeline.txt"
@@ -514,7 +584,7 @@ def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, An
         sys.stdout.reconfigure(encoding="utf-8")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")
-    markdown, html = asyncio.run(crawl4ai_fetch(url))
+    markdown, html, fetch_source = crawl4ai_fetch_cached(url, use_cache=use_cache, ttl_seconds=cache_ttl)
     markdown = remove_cookie_noise(markdown)
     html_text = remove_cookie_noise(BeautifulSoup(html or "", "html.parser").get_text("\n", strip=True))
     extraction_text = f"{markdown}\n{html_text}".strip()
@@ -522,17 +592,23 @@ def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, An
     specs = extract_specs_from_text_from_module(extraction_text)
     if "sielaff" in fabricante.lower() and is_sielaff_public_series_model(modelo):
         apply_sielaff_public_series_specs_from_module(modelo, extraction_text, specs)
-    return {
+    payload: dict[str, Any] = {
         "fabricante": fabricante,
         "modelo_base": modelo,
         "tipo_maquina": infer_tipo_maquina(combined),
         "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
+        "_image_candidates": _candidate_image_list(html, url, fabricante, modelo),
         "versiones_disponibles": [],
         **specs,
         "_crawl4ai_extract": {
             "markdown_sample": extraction_text[:60000],
+            "fetch_source": fetch_source,
         },
     }
+    jsonld = extract_jsonld_from_html(html or "", url, fabricante, modelo)
+    if jsonld:
+        merge_jsonld_into(payload, jsonld)
+    return payload
 
 
 def extract_specs_from_text(text: str | None) -> dict[str, dict[str, Any]]:
@@ -819,6 +895,14 @@ def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url:
     print(f"[{row_number}] Fabricante: {fabricante}")
     print(f"[{row_number}] Modelo: {modelo}")
     print(f"[{row_number}] URL: {url}")
+    resolution = datos.get("_resolution") or {}
+    if resolution:
+        sitemap_info = resolution.get("sitemap") or {}
+        print(
+            f"[{row_number}] Resolver: chose={resolution.get('chose')} "
+            f"nav_changed={resolution.get('nav_changed')} "
+            f"sitemap_score={sitemap_info.get('score')}"
+        )
     print(f"[{row_number}] Tipo: {datos.get('tipo_maquina')}")
     print(f"[{row_number}] Categoria Supabase: {category_for(datos.get('tipo_maquina'), modelo, datos)}")
     print(f"[{row_number}] Imagen: {datos.get('imagen_url')}")
@@ -837,6 +921,31 @@ def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url:
             f"[{row_number}] Calidad: {quality.get('score')} "
             f"warnings={json.dumps(quality.get('warnings') or [], ensure_ascii=False)}"
         )
+    jsonld_info = datos.get("_jsonld_extract") or {}
+    if jsonld_info:
+        print(
+            f"[{row_number}] JSON-LD ({jsonld_info.get('source')}): "
+            f"filled={json.dumps(jsonld_info.get('filled_fields') or [], ensure_ascii=False)}"
+        )
+    crawl_meta = datos.get("_crawl4ai_extract") or {}
+    if crawl_meta.get("fetch_source"):
+        print(f"[{row_number}] Fetch: {crawl_meta.get('fetch_source')}")
+    basic_meta = datos.get("_basic_extract") or {}
+    if basic_meta.get("fetch_source") and not crawl_meta.get("fetch_source"):
+        print(f"[{row_number}] Fetch: {basic_meta.get('fetch_source')}")
+    verification = datos.get("_image_verification") or {}
+    if verification:
+        chosen = verification.get("chosen")
+        if chosen:
+            print(
+                f"[{row_number}] Imagen verificada: score={chosen.get('clip_score')} "
+                f"label={chosen.get('best_label')} size={chosen.get('width')}x{chosen.get('height')}"
+            )
+        else:
+            print(
+                f"[{row_number}] Imagen no verificada: candidates={verification.get('candidate_count')} "
+                f"rejected={json.dumps([r.get('best_label') or r.get('error') for r in (verification.get('rejected') or [])], ensure_ascii=False)}"
+            )
     ai = datos.get("_ai_extract") or {}
     if ai:
         print(
@@ -917,6 +1026,51 @@ def should_use_ai(mode: str, quality: dict[str, Any], fallback_below: float) -> 
     return False
 
 
+def apply_image_verification(
+    datos: dict[str, Any],
+    *,
+    verifier,
+    max_candidates: int,
+) -> dict[str, Any]:
+    """Re-pick the canonical image using a CLIP verifier.
+
+    Mutates `datos` in-place: overwrites `imagen_url` with the first
+    candidate that passes verification, and stores a diagnostic block
+    under `_image_verification` for review/auditing.
+    """
+    if verifier is None:
+        return datos
+    candidates: list[str] = list(datos.get("_image_candidates") or [])
+    if datos.get("imagen_url") and datos["imagen_url"] not in candidates:
+        candidates.insert(0, datos["imagen_url"])
+    if not candidates:
+        datos["_image_verification"] = {"skipped": "no_candidates"}
+        return datos
+    rejected: list[dict] = []
+    chosen: str | None = None
+    chosen_info: dict | None = None
+    for candidate in candidates[:max_candidates]:
+        try:
+            result = verifier(candidate)
+        except Exception as exc:
+            rejected.append({"url": candidate, "error": str(exc)})
+            continue
+        info = result.to_dict() if hasattr(result, "to_dict") else {}
+        info["url"] = candidate
+        if getattr(result, "is_vending", False):
+            chosen = candidate
+            chosen_info = info
+            break
+        rejected.append(info)
+    datos["imagen_url"] = chosen
+    datos["_image_verification"] = {
+        "chosen": chosen_info,
+        "rejected": rejected,
+        "candidate_count": len(candidates),
+    }
+    return datos
+
+
 def apply_ai_enrichment(
     datos: dict[str, Any],
     *,
@@ -991,15 +1145,69 @@ def main() -> int:
         default=0.55,
         help="Save rows below this extraction quality score as pending_review instead of approved.",
     )
+    parser.add_argument(
+        "--verify-images",
+        action="store_true",
+        help="Use CLIP zero-shot classification to verify candidate images really show a vending machine.",
+    )
+    parser.add_argument(
+        "--image-clip-threshold",
+        type=float,
+        default=0.55,
+        help="Minimum CLIP positive-mass score required to keep an image. Lower = more permissive.",
+    )
+    parser.add_argument(
+        "--image-candidates",
+        type=int,
+        default=6,
+        help="Maximum number of image candidates to feed through the verifier per page.",
+    )
+    parser.add_argument(
+        "--no-page-cache",
+        action="store_true",
+        help="Disable the on-disk page cache (always refetch).",
+    )
+    parser.add_argument(
+        "--page-cache-ttl",
+        type=int,
+        default=page_cache.DEFAULT_TTL_SECONDS,
+        help="Seconds before a cached page is considered stale. Default 24h.",
+    )
+    parser.add_argument(
+        "--purge-cache",
+        action="store_true",
+        help="Delete the on-disk page cache and exit immediately.",
+    )
+    parser.add_argument(
+        "--no-sitemap",
+        action="store_true",
+        help="Disable sitemap-based resolution (navigation-only).",
+    )
+    parser.add_argument(
+        "--sitemap-min-score",
+        type=float,
+        default=1.4,
+        help="Minimum score a sitemap candidate must beat to override the CSV URL.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     load_dotenv(Path(args.env_file))
+
+    if args.purge_cache:
+        deleted = page_cache.purge()
+        print(f"[cache] purged {deleted} entries from {page_cache.DEFAULT_CACHE_DIR}")
+        return 0
+
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
     if not supabase_url or not supabase_key:
         print("Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY en .env o entorno.", file=sys.stderr)
         return 2
+
+    use_page_cache = not args.no_page_cache
+    if use_page_cache:
+        print(f"[cache] enabled at {page_cache.DEFAULT_CACHE_DIR} (TTL {args.page_cache_ttl}s)")
 
     csv_path = Path(args.csv)
     if not csv_path.exists():
@@ -1017,6 +1225,19 @@ def main() -> int:
     serper_key = os.environ.get("SERPER_API_KEY")
     firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
 
+    image_verifier = None
+    if args.verify_images:
+        try:
+            from crawling.image_verifier import verify_image_url
+
+            image_verifier = lambda candidate_url: verify_image_url(
+                candidate_url, threshold=args.image_clip_threshold
+            )
+            print("[image-verifier] CLIP zero-shot verification enabled")
+        except Exception as exc:  # pragma: no cover - optional dependency wiring
+            print(f"[image-verifier] disabled, could not load module: {exc}", file=sys.stderr)
+            image_verifier = None
+
     for offset, row in enumerate(selected, start=args.start_row):
         fabricante = clean_text(row.get("Fabricante"))
         modelo = clean_text(row.get("Modelo"))
@@ -1031,16 +1252,35 @@ def main() -> int:
             if not url:
                 raise RuntimeError("No URL found. Provide URL column or SERPER_API_KEY.")
             original_url = url
-            url = resolve_product_url_from_module(url, fabricante, modelo)
+            url, resolution_trace = resolve_best_product_url_from_module(
+                url,
+                fabricante,
+                modelo,
+                use_sitemap=not args.no_sitemap,
+                sitemap_min_score=args.sitemap_min_score,
+            )
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"}:
                 raise RuntimeError(f"Invalid URL scheme: {url}")
             if args.extractor == "firecrawl":
-                datos = scrape_with_firecrawl(url, fabricante, modelo, firecrawl_key) or scrape_basic(url, fabricante, modelo)
+                datos = scrape_with_firecrawl(url, fabricante, modelo, firecrawl_key) or scrape_basic(
+                    url, fabricante, modelo, use_cache=use_page_cache, cache_ttl=args.page_cache_ttl
+                )
             elif args.extractor == "crawl4ai":
-                datos = scrape_with_crawl4ai(url, fabricante, modelo)
+                datos = scrape_with_crawl4ai(
+                    url, fabricante, modelo, use_cache=use_page_cache, cache_ttl=args.page_cache_ttl
+                )
             else:
-                datos = scrape_basic(url, fabricante, modelo)
+                datos = scrape_basic(
+                    url, fabricante, modelo, use_cache=use_page_cache, cache_ttl=args.page_cache_ttl
+                )
+            datos["_resolution"] = resolution_trace
+            if image_verifier is not None:
+                apply_image_verification(
+                    datos,
+                    verifier=image_verifier,
+                    max_candidates=args.image_candidates,
+                )
             pre_ai_quality = quality_report(original_url, url, modelo, datos)
             ai_warnings: list[str] = []
             if should_use_ai(args.ai_mode, pre_ai_quality, args.ai_fallback_below_quality):
