@@ -18,6 +18,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -141,6 +142,28 @@ def load_dotenv(path: Path) -> None:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
     return re.sub(r"-+", "-", slug) or "unknown"
+
+
+def comparable_model(value: str) -> str:
+    replacements = {
+        "è": "e",
+        "é": "e",
+        "ê": "e",
+        "à": "a",
+        "á": "a",
+        "ì": "i",
+        "í": "i",
+        "ò": "o",
+        "ó": "o",
+        "ù": "u",
+        "ú": "u",
+        "&": "and",
+        "+": "plus",
+    }
+    lowered = value.lower()
+    for source, target in replacements.items():
+        lowered = lowered.replace(source, target)
+    return re.sub(r"[^a-z0-9]+", "", lowered)
 
 
 def clean_text(value: Any) -> str:
@@ -331,6 +354,46 @@ def search_url_with_serper(fabricante: str, modelo: str, serper_api_key: str | N
     return scored[0][1] if scored else organic[0].get("link")
 
 
+def resolve_product_url(url: str, fabricante: str, modelo: str) -> str:
+    parsed = urlparse(url)
+    generic_paths = {"/en/collection/", "/collection/", "/en/products/", "/products/", "/en/gallery/", "/gallery/"}
+    is_collection_index = parsed.path in generic_paths
+    is_collection_listing = "/collection/categories/" in parsed.path or "/collection/families/" in parsed.path
+    if not is_collection_index and not is_collection_listing:
+        return url
+    try:
+        response = requests.get(url, timeout=30, headers={"user-agent": "MachineCatalogImporter/1.0"})
+        response.raise_for_status()
+    except Exception:
+        return url
+    soup = BeautifulSoup(response.text, "html.parser")
+    wanted = comparable_model(modelo)
+    candidates: list[tuple[float, str, str]] = []
+    for anchor in soup.find_all("a", href=True):
+        label = " ".join(anchor.get_text(" ", strip=True).split())
+        href = urljoin(url, anchor["href"])
+        link_host = urlparse(href).netloc
+        if link_host and link_host != parsed.netloc:
+            continue
+        haystack = comparable_model(f"{label} {href}")
+        if not haystack or "/collection/" not in href:
+            continue
+        score = SequenceMatcher(None, wanted, haystack).ratio()
+        if wanted and wanted in haystack:
+            score += 1
+        for token in re.split(r"[^a-zA-Z0-9]+", modelo):
+            token_cmp = comparable_model(token)
+            if len(token_cmp) >= 3 and token_cmp in haystack:
+                score += 0.2
+        candidates.append((score, href, label))
+    candidates.sort(reverse=True, key=lambda item: item[0])
+    if candidates and candidates[0][0] >= 0.7:
+        resolved = candidates[0][1]
+        print(f"[resolver] {fabricante} / {modelo}: {url} -> {resolved} ({candidates[0][2]})")
+        return resolved
+    return url
+
+
 def scrape_with_firecrawl(url: str, fabricante: str, modelo: str, firecrawl_api_key: str | None) -> dict[str, Any] | None:
     if not firecrawl_api_key or importlib.util.find_spec("firecrawl") is None:
         return None
@@ -396,9 +459,7 @@ def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
         "tipo_maquina": tipo,
         "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
         "versiones_disponibles": [],
-        "especificaciones_fisicas": {},
-        "especificaciones_electricas": {},
-        "componentes_hardware": {},
+        **extract_specs_from_text(text),
         "_basic_extract": {"title": title, "text_sample": text[:2000]},
     }
 
@@ -442,11 +503,50 @@ def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, An
         "tipo_maquina": infer_tipo_maquina(combined),
         "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
         "versiones_disponibles": [],
-        "especificaciones_fisicas": {},
-        "especificaciones_electricas": {},
-        "componentes_hardware": {},
+        **extract_specs_from_text(markdown),
         "_crawl4ai_extract": {
-            "markdown_sample": (markdown or "")[:4000],
+            "markdown_sample": (markdown or "")[:12000],
+        },
+    }
+
+
+def extract_specs_from_text(text: str | None) -> dict[str, dict[str, Any]]:
+    cleaned = remove_cookie_noise(text)
+    lowered = cleaned.lower()
+
+    def number_after(label: str) -> int | None:
+        match = re.search(rf"{label}\s*[:\-]?\s*([0-9]+(?:[.,][0-9]+)?)\s*mm", lowered)
+        if not match:
+            return None
+        return int(float(match.group(1).replace(",", ".")))
+
+    def first_match(pattern: str) -> str | None:
+        match = re.search(pattern, cleaned, re.I)
+        return " ".join(match.group(1).split()) if match else None
+
+    screen_match = re.search(r"(?:touch\s*(?:screen|panel)|screen)\s*[:\-]?\s*([0-9]+(?:[.,][0-9]+)?)\s*(?:\"|”|inches|inch)", cleaned, re.I)
+    cups_match = re.search(r"cups/day\s*[:\-]?\s*(?:up to\s*)?([0-9]+)", cleaned, re.I)
+    selections_match = re.search(r"direct selections\s*[:\-]?\s*(?:up to\s*)?([0-9]+)", cleaned, re.I)
+
+    return {
+        "especificaciones_fisicas": {
+            "alto_mm": number_after("height"),
+            "ancho_mm": number_after("width"),
+            "profundidad_mm": number_after("depth"),
+            "peso_kg": None,
+        },
+        "especificaciones_electricas": {
+            "voltaje": first_match(r"electrical supply\s*[:\-]?\s*([^\n\r]+)"),
+            "potencia_watts": None,
+            "gas_refrigerante": None,
+        },
+        "componentes_hardware": {
+            "grupo_infusor": first_match(r"(variflex\s*[0-9]+(?:\s*o\s*[0-9]+)?)"),
+            "mecanica_extraccion": None,
+            "capacidad_vasos": int(cups_match.group(1)) if cups_match else None,
+            "capacidad_canales_o_espirales": f"direct selections: {selections_match.group(1)}" if selections_match else None,
+            "telemetria_integrada": True if "rhealive" in lowered or "wi-fi" in lowered or "remote management" in lowered else None,
+            "touchscreen_pulgadas": float(screen_match.group(1).replace(",", ".")) if screen_match else None,
         },
     }
 
@@ -634,7 +734,9 @@ def relevant_sample(text: str, modelo: str) -> str:
         lowered_line = compact_line.lower()
         if not compact_line:
             continue
-        if compact_line.startswith(("* [", "[ ![", "![", "Toggle navigation")):
+        if compact_line.startswith(("* [", "* Products", "* About Rhea", "* Rhea Evolution", "[ ![", "![", "Toggle navigation")):
+            continue
+        if compact_line in {"×", "#", "Menu"}:
             continue
         if lowered_line.startswith(("spare parts", "corporation", "history", "contact", "news")):
             continue
@@ -643,10 +745,11 @@ def relevant_sample(text: str, modelo: str) -> str:
         lines.append(compact_line)
     compact = " ".join(lines) if lines else " ".join(text.split())
     lowered = compact.lower()
-    candidates = [modelo.lower()]
-    candidates.extend(word.lower() for word in re.split(r"[^a-zA-Z0-9]+", modelo) if len(word) >= 4)
-    candidates.extend(["technical", "specifications", "features", "vending", "machine", "snack", "drink", "coffee"])
-    positions = [lowered.find(candidate) for candidate in candidates if candidate and lowered.find(candidate) >= 0]
+    model_candidates = [modelo.lower()]
+    model_candidates.extend(word.lower() for word in re.split(r"[^a-zA-Z0-9]+", modelo) if len(word) >= 4)
+    generic_candidates = ["### description", "description", "measures", "product details", "technical", "specifications", "features"]
+    model_positions = [lowered.find(candidate) for candidate in model_candidates if candidate and lowered.find(candidate) >= 0]
+    positions = model_positions or [lowered.find(candidate) for candidate in generic_candidates if lowered.find(candidate) >= 0]
     if not positions:
         return compact
     start = max(min(positions) - 220, 0)
@@ -712,6 +815,7 @@ def main() -> int:
                 url = search_url_with_serper(fabricante, modelo, serper_key) or ""
             if not url:
                 raise RuntimeError("No URL found. Provide URL column or SERPER_API_KEY.")
+            url = resolve_product_url(url, fabricante, modelo)
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"}:
                 raise RuntimeError(f"Invalid URL scheme: {url}")
