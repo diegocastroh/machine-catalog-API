@@ -10,11 +10,12 @@ def extract_specs_from_text(text: str | None) -> dict[str, dict[str, Any]]:
     cleaned = remove_cookie_noise(text)
     lowered = cleaned.lower()
 
-    def number_after(label: str) -> int | None:
-        match = re.search(rf"{label}\s*[:\-]?\s*([0-9]+(?:[.,][0-9]+)?)\s*mm", lowered)
-        if not match:
-            return None
-        return int(float(match.group(1).replace(",", ".")))
+    def number_after(*labels: str) -> int | None:
+        for label in labels:
+            match = re.search(rf"\b{label}\b\s*[:\-]?\s*([0-9]+(?:[.,][0-9]+)?)\s*mm", lowered)
+            if match:
+                return int(float(match.group(1).replace(",", ".")))
+        return None
 
     def first_match(pattern: str) -> str | None:
         match = re.search(pattern, cleaned, re.I)
@@ -28,12 +29,12 @@ def extract_specs_from_text(text: str | None) -> dict[str, dict[str, Any]]:
         cleaned,
         re.I,
     )
-    weight_match = re.search(r"weight(?:[^:\n\r]*)?\s*[:\-]?\s*(?:approx\.\s*)?([0-9.,]+)\s*kg", cleaned, re.I)
+    weight_match = re.search(r"\bweight\b\s*[:\-]?\s*(?:approx\.\s*)?([0-9.,]+)\s*kg", cleaned, re.I)
     power_match = re.search(r"(?:power consumption|output|power)\s*[:\-]?\s*([0-9.,]+(?:\s*-\s*[0-9.,]+)?\s*w)", cleaned, re.I)
 
     return {
         "especificaciones_fisicas": {
-            "alto_mm": number_after("height") or number_from_match(dimensions_match, 1),
+            "alto_mm": number_after("height", "high") or number_from_match(dimensions_match, 1),
             "ancho_mm": number_after("width") or number_from_match(dimensions_match, 2),
             "profundidad_mm": number_after("depth") or number_from_match(dimensions_match, 3),
             "peso_kg": number_from_match(weight_match, 1),

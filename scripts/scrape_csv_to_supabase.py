@@ -39,6 +39,11 @@ except ModuleNotFoundError:  # pragma: no cover - startup dependency message
 
 from crawling.ai_extractor import extract_with_ollama, merge_ai_extraction
 from crawling.quality import quality_report
+from crawling.resolvers import resolve_product_url as resolve_product_url_from_module
+from crawling.specs import (
+    apply_sielaff_public_series_specs as apply_sielaff_public_series_specs_from_module,
+    extract_specs_from_text as extract_specs_from_text_from_module,
+)
 
 
 CATEGORY_MAP = {
@@ -474,7 +479,7 @@ def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
         "tipo_maquina": tipo,
         "imagen_url": first_http_url(choose_best_image_from_html(html, url, fabricante, modelo)),
         "versiones_disponibles": [],
-        **extract_specs_from_text(text),
+        **extract_specs_from_text_from_module(text),
         "_basic_extract": {"title": title, "text_sample": text[:2000]},
     }
 
@@ -514,9 +519,9 @@ def scrape_with_crawl4ai(url: str, fabricante: str, modelo: str) -> dict[str, An
     html_text = remove_cookie_noise(BeautifulSoup(html or "", "html.parser").get_text("\n", strip=True))
     extraction_text = f"{markdown}\n{html_text}".strip()
     combined = f"{fabricante} {modelo} {extraction_text}"
-    specs = extract_specs_from_text(extraction_text)
+    specs = extract_specs_from_text_from_module(extraction_text)
     if "sielaff" in fabricante.lower() and is_sielaff_public_series_model(modelo):
-        apply_sielaff_public_series_specs(modelo, extraction_text, specs)
+        apply_sielaff_public_series_specs_from_module(modelo, extraction_text, specs)
     return {
         "fabricante": fabricante,
         "modelo_base": modelo,
@@ -1018,7 +1023,7 @@ def main() -> int:
             if not url:
                 raise RuntimeError("No URL found. Provide URL column or SERPER_API_KEY.")
             original_url = url
-            url = resolve_product_url(url, fabricante, modelo)
+            url = resolve_product_url_from_module(url, fabricante, modelo)
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"}:
                 raise RuntimeError(f"Invalid URL scheme: {url}")
