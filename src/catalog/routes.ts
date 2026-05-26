@@ -115,6 +115,20 @@ export async function registerCatalogRoutes(app: FastifyInstance, options: Route
     return { success: true, data: await options.store.createModel(payload) };
   });
 
+  app.get('/api/v1/admin/catalog/machine-models', async (request) => {
+    requireAdmin(request);
+    const query = normalizeAdminQuery(request.query as Record<string, string | undefined>);
+    return { success: true, data: await options.store.listModels({ ...query, publicOnly: false }) };
+  });
+
+  app.get('/api/v1/admin/catalog/machine-models/:id', async (request) => {
+    requireAdmin(request);
+    const { id } = idParamsSchema.parse(request.params);
+    const model = await options.store.getModel(id, false);
+    if (!model) throw httpError(404, 'Model not found');
+    return { success: true, data: model };
+  });
+
   app.patch('/api/v1/admin/catalog/machine-models/:id', async (request) => {
     requireAdmin(request);
     const { id } = idParamsSchema.parse(request.params);
@@ -303,6 +317,16 @@ function normalizePublicQuery(query: Record<string, string | undefined>): Record
     category: query.category,
     manufacturer: query.manufacturer,
     status: 'approved',
+    has_images: query.has_images === 'true' ? true : undefined
+  };
+}
+
+function normalizeAdminQuery(query: Record<string, string | undefined>): Record<string, string | boolean | undefined> {
+  return {
+    q: query.q,
+    category: query.category,
+    manufacturer: query.manufacturer,
+    status: query.status,
     has_images: query.has_images === 'true' ? true : undefined
   };
 }

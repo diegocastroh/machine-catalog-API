@@ -77,6 +77,8 @@ Admin, requieren header `x-admin-api-key`:
 - `PATCH /api/v1/admin/catalog/manufacturers/:id`
 - `DELETE /api/v1/admin/catalog/manufacturers/:id`
 - `POST /api/v1/admin/catalog/machine-models`
+- `GET /api/v1/admin/catalog/machine-models`
+- `GET /api/v1/admin/catalog/machine-models/:id`
 - `PATCH /api/v1/admin/catalog/machine-models/:id`
 - `POST /api/v1/admin/catalog/machine-models/:id/approve`
 - `POST /api/v1/admin/catalog/machine-models/:id/reject`
@@ -145,6 +147,39 @@ curl -X POST http://localhost:3000/api/v1/admin/catalog/crawl-jobs/CRAWL_JOB_UUI
 
 El worker respeta robots.txt mediante Scrapy, usa AutoThrottle, limita concurrencia por dominio y deja todo resultado automatico en `normalized_extractions` para revision. Playwright solo se usa cuando `dynamic_rendering=true` en la source config.
 
+## Importar SQLite de Colab
+
+El importador toma `catalogo_vending` desde SQLite, crea fabricantes faltantes, publica modelos aprobados, guarda imagen principal y conserva el JSON tecnico original en `machine_model_specs.raw_specs`.
+
+```bash
+python scripts/import-vending-sqlite.py --db C:\Users\diego\Downloads\vending_api_data.db --base-url http://localhost:3000
+```
+
+Opciones utiles:
+
+```bash
+python scripts/import-vending-sqlite.py --from-id 86 --to-id 113
+python scripts/import-vending-sqlite.py --dry-run
+```
+
+## Consultas rapidas
+
+Local:
+
+```bash
+python scripts/check-machine.py "W-USI" --base-url http://localhost:3000 --detail
+```
+
+Cloud Run:
+
+```bash
+python scripts/check-machine.py "JL500" --base-url https://machine-catalog-api-533385883571.us-central1.run.app --limit 5
+```
+
+URL de produccion actual:
+
+- `https://machine-catalog-api-533385883571.us-central1.run.app`
+
 ## Validacion
 
 ```bash
@@ -159,4 +194,4 @@ npm run build
 
 - Panel administrativo visual.
 - RBAC integrado con un proveedor de identidad real.
-- Despliegue Cloud Run. Para esta fase se dejo solo ejecucion local.
+- Migrar variables sensibles de Cloud Run a Secret Manager si se requiere rotacion/auditoria formal.

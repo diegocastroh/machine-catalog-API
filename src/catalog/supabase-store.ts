@@ -107,7 +107,7 @@ export class SupabaseCatalogStore implements CatalogStore {
     };
     const model = await this.insertOne('machine_catalog_models', payload);
     if (input.specs) {
-      await this.insertOne('machine_model_specs', { machine_model_id: model.id, raw_specs: input.specs });
+      await this.insertOne('machine_model_specs', this.buildSpecPayload(model.id, input.specs));
     }
     if (payload.primary_category_id) {
       await this.insertOne('machine_model_categories', {
@@ -441,6 +441,40 @@ export class SupabaseCatalogStore implements CatalogStore {
       .single();
     if (error) throw error;
     return data;
+  }
+
+  private buildSpecPayload(machineModelId: string, specs: Record<string, unknown>): Record<string, unknown> {
+    const physical = this.objectValue(specs.especificaciones_fisicas);
+    const energy = this.objectValue(specs.especificaciones_electricas);
+    const hardware = this.objectValue(specs.componentes_hardware);
+    return {
+      machine_model_id: machineModelId,
+      height_mm: this.numberValue(physical.alto_mm),
+      width_mm: this.numberValue(physical.ancho_mm),
+      depth_mm: this.numberValue(physical.profundidad_mm),
+      weight_kg: this.numberValue(physical.peso_kg),
+      capacity_units: this.numberValue(hardware.capacidad_vasos),
+      capacity_description: this.stringValue(hardware.capacidad_canales_o_espirales),
+      voltage: this.stringValue(energy.voltaje),
+      power_requirements: this.stringValue(energy.potencia_watts),
+      refrigerated: this.stringValue(energy.gas_refrigerante) ? true : null,
+      raw_specs: specs
+    };
+  }
+
+  private objectValue(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  }
+
+  private stringValue(value: unknown): string | null {
+    if (value === null || value === undefined || value === '') return null;
+    return String(value);
+  }
+
+  private numberValue(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
   }
 
   private async selectMany(query: PromiseLike<{ data: any[] | null; error: any }>): Promise<any[]> {

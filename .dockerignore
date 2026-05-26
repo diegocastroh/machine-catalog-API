@@ -1,0 +1,11 @@
+.env
+.env.local
+.git
+.pytest_cache
+.scraper-output
+coverage
+dist
+node_modules
+*.log
+__pycache__
+*.pyc
