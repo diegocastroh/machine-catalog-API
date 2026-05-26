@@ -179,7 +179,7 @@ def model_exists(base_url: str, admin_api_key: str, manufacturer_id: str, model_
     )
 
 
-def import_row(base_url: str, admin_api_key: str, row: dict[str, Any], dry_run: bool) -> str:
+def import_row(base_url: str, admin_api_key: str, row: dict[str, Any], dry_run: bool, skip_existing: bool) -> str:
     manufacturer_name = (row.get("fabricante") or "").strip()
     model_name = (row.get("modelo") or "").strip()
     if not manufacturer_name or not model_name:
@@ -191,7 +191,7 @@ def import_row(base_url: str, admin_api_key: str, row: dict[str, Any], dry_run: 
         return "dry_run"
 
     manufacturer = ensure_manufacturer(base_url, admin_api_key, manufacturer_name)
-    if model_exists(base_url, admin_api_key, manufacturer["id"], model_name):
+    if skip_existing and model_exists(base_url, admin_api_key, manufacturer["id"], model_name):
         return "skipped_duplicate"
 
     model = request_json(
@@ -252,6 +252,11 @@ def main() -> int:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--from-id", type=int, default=None)
     parser.add_argument("--to-id", type=int, default=None)
+    parser.add_argument(
+        "--no-skip-existing",
+        action="store_true",
+        help="Try to insert every SQLite row. Normally disabled because catalog models are unique by manufacturer/model.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -281,7 +286,13 @@ def main() -> int:
 
     for row in rows:
         try:
-            status = import_row(args.base_url, admin_api_key, row, args.dry_run)
+            status = import_row(
+                args.base_url,
+                admin_api_key,
+                row,
+                args.dry_run,
+                skip_existing=not args.no_skip_existing,
+            )
         except Exception as exc:
             status = "failed"
             print(f"[{row.get('id')}] {row.get('fabricante')} / {row.get('modelo')}: {exc}", file=sys.stderr)
