@@ -1,0 +1,527 @@
+#!/usr/bin/env python
+"""Scrape a vending CSV and write results directly to Supabase.
+
+Required CSV columns: Fabricante, Modelo. Optional: URL.
+Required env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
+Optional env: SERPER_API_KEY, FIRECRAWL_API_KEY.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import importlib.util
+import json
+import os
+import re
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+try:
+    from supabase import Client, create_client
+except ModuleNotFoundError:  # pragma: no cover - startup dependency message
+    print(
+        "Falta instalar dependencias. Ejecuta: python -m pip install -r scripts/requirements-supabase-pipeline.txt",
+        file=sys.stderr,
+    )
+    raise
+
+
+CATEGORY_MAP = {
+    "coffee": "coffee",
+    "snack": "snack_drink",
+    "combo": "snack_drink",
+    "drink": "cold_beverage",
+    "beverage": "cold_beverage",
+    "frozen": "ice_cream",
+    "locker": "smart_locker",
+    "industrial": "industrial",
+}
+
+
+@dataclass
+class Counters:
+    created: int = 0
+    updated: int = 0
+    skipped_duplicate: int = 0
+    skipped_incomplete: int = 0
+    failed: int = 0
+    dry_run: int = 0
+
+
+def load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value.strip().lower()).strip("-")
+    return re.sub(r"-+", "-", slug) or "unknown"
+
+
+def clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def normalize_json(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if hasattr(value, "dict"):
+        value = value.dict()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def infer_tipo_maquina(text: str) -> str | None:
+    lowered = text.lower()
+    if any(x in lowered for x in ["coffee", "café", "cafe", "espresso", "capuccino", "cappuccino", "vitro"]):
+        return "coffee"
+    if any(x in lowered for x in ["snack", "spiral", "espiral", "chips", "chocolate", "candy", "dulces"]):
+        return "snack"
+    if any(x in lowered for x in ["drink", "beverage", "bebida", "soda", "can", "bottle", "lata", "botella"]):
+        return "drink"
+    if any(x in lowered for x in ["combo", "snack and drink", "snacks and drinks"]):
+        return "combo"
+    if any(x in lowered for x in ["frozen", "ice cream", "helado", "congelado"]):
+        return "frozen"
+    if "locker" in lowered:
+        return "locker"
+    if any(x in lowered for x in ["food", "fresh food", "comida", "meal"]):
+        return "food"
+    return None
+
+
+def category_for(tipo: str | None, model_name: str, specs: dict[str, Any]) -> str:
+    tipo_normalized = clean_text(tipo).lower()
+    if tipo_normalized == "food":
+        text = f"{model_name} {json.dumps(specs, ensure_ascii=False)}".lower()
+        return "hot_food" if "hot" in text or "heated" in text else "fresh_food"
+    return CATEGORY_MAP.get(tipo_normalized, "other")
+
+
+def is_probably_bad_image(url: str) -> bool:
+    if not url:
+        return True
+    lowered = url.lower()
+    bad_keywords = [
+        "logo",
+        "favicon",
+        "icon",
+        "sprite",
+        "placeholder",
+        "blank",
+        "spinner",
+        "loading",
+        "whatsapp",
+        "facebook",
+        "instagram",
+        "linkedin",
+        "youtube",
+        "twitter",
+        "x-twitter",
+    ]
+    return lowered.startswith("data:") or lowered.endswith((".svg", ".ico")) or any(x in lowered for x in bad_keywords)
+
+
+def score_image_url(url: str, fabricante: str, modelo: str) -> int:
+    lowered = url.lower()
+    score = 0
+    for word in fabricante.replace("-", " ").split():
+        if len(word) > 2 and word.lower() in lowered:
+            score += 4
+    for word in modelo.replace("-", " ").split():
+        if len(word) > 1 and word.lower() in lowered:
+            score += 5
+    for keyword in ["product", "machine", "maquina", "vending", "catalog", "render", "photo", "image"]:
+        if keyword in lowered:
+            score += 2
+    if lowered.endswith((".jpg", ".jpeg", ".png", ".webp")):
+        score += 2
+    return score
+
+
+def choose_best_image_from_html(html: str | None, base_url: str, fabricante: str, modelo: str) -> str | None:
+    if not html:
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    images: list[str] = []
+    for img in soup.find_all("img"):
+        candidates = [img.get("src"), img.get("data-src"), img.get("data-lazy-src"), img.get("data-original")]
+        srcset = img.get("srcset")
+        if srcset:
+            candidates.extend(part.strip().split(" ")[0] for part in srcset.split(",") if part.strip())
+        for src in candidates:
+            if not src:
+                continue
+            absolute = urljoin(base_url, src)
+            if not is_probably_bad_image(absolute):
+                images.append(absolute)
+    unique = list(dict.fromkeys(images))
+    unique.sort(key=lambda item: score_image_url(item, fabricante, modelo), reverse=True)
+    return unique[0] if unique else None
+
+
+def search_url_with_serper(fabricante: str, modelo: str, serper_api_key: str | None) -> str | None:
+    if not serper_api_key:
+        return None
+    payload = {
+        "q": f'"{fabricante}" "{modelo}" vending machine technical specifications official',
+        "gl": "us",
+        "hl": "en",
+        "num": 5,
+    }
+    response = requests.post(
+        "https://google.serper.dev/search",
+        headers={"X-API-KEY": serper_api_key, "Content-Type": "application/json"},
+        json=payload,
+        timeout=20,
+    )
+    response.raise_for_status()
+    organic = response.json().get("organic", [])
+    if not organic:
+        return None
+    scored: list[tuple[int, str]] = []
+    fabricante_clean = fabricante.lower().replace(" ", "")
+    for item in organic:
+        link = item.get("link")
+        if not link:
+            continue
+        combined = f"{link} {item.get('title', '')} {item.get('snippet', '')}".lower()
+        score = 0
+        if fabricante.lower() in combined:
+            score += 5
+        if modelo.lower() in combined:
+            score += 5
+        if fabricante_clean in link.lower().replace("-", "").replace("_", ""):
+            score += 5
+        if any(x in combined for x in ["official", "specification", "technical", "datasheet", "brochure", "product"]):
+            score += 2
+        scored.append((score, link))
+    scored.sort(reverse=True, key=lambda item: item[0])
+    return scored[0][1] if scored else organic[0].get("link")
+
+
+def scrape_with_firecrawl(url: str, fabricante: str, modelo: str, firecrawl_api_key: str | None) -> dict[str, Any] | None:
+    if not firecrawl_api_key or importlib.util.find_spec("firecrawl") is None:
+        return None
+    from firecrawl import Firecrawl
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "fabricante": {"type": ["string", "null"]},
+            "modelo_base": {"type": ["string", "null"]},
+            "tipo_maquina": {"type": ["string", "null"]},
+            "imagen_url": {"type": ["string", "null"]},
+            "versiones_disponibles": {"type": "array", "items": {"type": "string"}},
+            "especificaciones_fisicas": {"type": "object"},
+            "especificaciones_electricas": {"type": "object"},
+            "componentes_hardware": {"type": "object"},
+        },
+    }
+    prompt = f"""
+Extrae informacion tecnica unicamente de este modelo de maquina expendedora.
+Fabricante esperado: {fabricante}
+Modelo esperado: {modelo}
+No inventes datos. Si un valor no existe, usa null. La imagen debe ser una URL absoluta del producto, no logo.
+"""
+    client = Firecrawl(api_key=firecrawl_api_key)
+    result = client.scrape(
+        url,
+        formats=["markdown", "html", {"type": "json", "schema": schema, "prompt": prompt}],
+        only_main_content=False,
+        wait_for=3000,
+        timeout=120000,
+    )
+    json_data = normalize_json(getattr(result, "json", None) if not isinstance(result, dict) else result.get("json"))
+    html = getattr(result, "html", None) if not isinstance(result, dict) else result.get("html")
+    markdown = getattr(result, "markdown", None) if not isinstance(result, dict) else result.get("markdown")
+    if not json_data:
+        return None
+    json_data["fabricante"] = json_data.get("fabricante") or fabricante
+    json_data["modelo_base"] = json_data.get("modelo_base") or modelo
+    json_data["tipo_maquina"] = json_data.get("tipo_maquina") or infer_tipo_maquina(f"{fabricante} {modelo} {markdown or ''}")
+    image = json_data.get("imagen_url")
+    if image:
+        image = urljoin(url, image)
+    json_data["imagen_url"] = image if image and not is_probably_bad_image(image) else choose_best_image_from_html(html, url, fabricante, modelo)
+    json_data.setdefault("versiones_disponibles", [])
+    json_data.setdefault("especificaciones_fisicas", {})
+    json_data.setdefault("especificaciones_electricas", {})
+    json_data.setdefault("componentes_hardware", {})
+    return json_data
+
+
+def scrape_basic(url: str, fabricante: str, modelo: str) -> dict[str, Any]:
+    response = requests.get(url, timeout=30, headers={"user-agent": "MachineCatalogImporter/1.0"})
+    response.raise_for_status()
+    html = response.text
+    soup = BeautifulSoup(html, "html.parser")
+    title = soup.title.get_text(" ", strip=True) if soup.title else ""
+    text = soup.get_text(" ", strip=True)[:12000]
+    tipo = infer_tipo_maquina(f"{fabricante} {modelo} {title} {text}")
+    return {
+        "fabricante": fabricante,
+        "modelo_base": modelo,
+        "tipo_maquina": tipo,
+        "imagen_url": choose_best_image_from_html(html, url, fabricante, modelo),
+        "versiones_disponibles": [],
+        "especificaciones_fisicas": {},
+        "especificaciones_electricas": {},
+        "componentes_hardware": {},
+        "_basic_extract": {"title": title, "text_sample": text[:2000]},
+    }
+
+
+def get_single(data: Any) -> dict[str, Any] | None:
+    if isinstance(data, list):
+        return data[0] if data else None
+    return data if isinstance(data, dict) else None
+
+
+def ensure_category_map(supabase: Client) -> dict[str, str]:
+    response = supabase.table("machine_categories").select("id,code").execute()
+    return {row["code"]: row["id"] for row in response.data or []}
+
+
+def ensure_manufacturer(supabase: Client, name: str) -> dict[str, Any]:
+    slug = slugify(name)
+    existing = (
+        supabase.table("machine_manufacturers")
+        .select("*")
+        .eq("slug", slug)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    found = get_single(existing.data)
+    if found:
+        return found
+    created = (
+        supabase.table("machine_manufacturers")
+        .insert({"name": name, "slug": slug, "status": "active", "source_confidence": 0.9})
+        .execute()
+    )
+    return get_single(created.data) or {}
+
+
+def find_model(supabase: Client, manufacturer_id: str, model_name: str) -> dict[str, Any] | None:
+    normalized = slugify(model_name)
+    response = (
+        supabase.table("machine_catalog_models")
+        .select("*")
+        .eq("manufacturer_id", manufacturer_id)
+        .eq("normalized_model_name", normalized)
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    return get_single(response.data)
+
+
+def spec_payload(machine_model_id: str, specs: dict[str, Any]) -> dict[str, Any]:
+    physical = specs.get("especificaciones_fisicas") or {}
+    energy = specs.get("especificaciones_electricas") or {}
+    hardware = specs.get("componentes_hardware") or {}
+    return {
+        "machine_model_id": machine_model_id,
+        "height_mm": physical.get("alto_mm"),
+        "width_mm": physical.get("ancho_mm"),
+        "depth_mm": physical.get("profundidad_mm"),
+        "weight_kg": physical.get("peso_kg"),
+        "capacity_units": hardware.get("capacidad_vasos"),
+        "capacity_description": hardware.get("capacidad_canales_o_espirales"),
+        "voltage": energy.get("voltaje"),
+        "power_requirements": str(energy.get("potencia_watts")) if energy.get("potencia_watts") else None,
+        "refrigerated": True if energy.get("gas_refrigerante") else None,
+        "raw_specs": specs,
+    }
+
+
+def image_exists(supabase: Client, model_id: str, image_url: str) -> bool:
+    response = (
+        supabase.table("machine_model_images")
+        .select("id")
+        .eq("machine_model_id", model_id)
+        .eq("source_image_url", image_url)
+        .limit(1)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def save_to_supabase(
+    supabase: Client,
+    categories: dict[str, str],
+    fabricante: str,
+    modelo: str,
+    url: str,
+    datos: dict[str, Any],
+    row_number: int,
+    mode: str,
+) -> str:
+    manufacturer = ensure_manufacturer(supabase, fabricante)
+    existing = find_model(supabase, manufacturer["id"], modelo)
+    category_code = category_for(datos.get("tipo_maquina"), modelo, datos)
+    category_id = categories.get(category_code)
+    normalized = slugify(modelo)
+    model_payload = {
+        "manufacturer_id": manufacturer["id"],
+        "model_name": modelo,
+        "normalized_model_name": normalized,
+        "model_slug": normalized,
+        "short_description": None,
+        "primary_category_id": category_id,
+        "status": "approved",
+        "lifecycle_status": "unknown",
+        "source_url": url or None,
+        "official_product_url": url or None,
+        "confidence_score": 0.82,
+    }
+    datos = {
+        **datos,
+        "_import": {
+            "source": "local_csv_supabase_pipeline",
+            "csv_row": row_number,
+            "mode": mode,
+        },
+    }
+    if existing and mode == "skip":
+        return "skipped_duplicate"
+    if existing:
+        model_id = existing["id"]
+        supabase.table("machine_catalog_models").update(model_payload).eq("id", model_id).execute()
+        status = "updated"
+    else:
+        created = supabase.table("machine_catalog_models").insert(model_payload).execute()
+        model = get_single(created.data)
+        if not model:
+            raise RuntimeError("Supabase did not return created model")
+        model_id = model["id"]
+        status = "created"
+        if category_id:
+            supabase.table("machine_model_categories").insert(
+                {"machine_model_id": model_id, "category_id": category_id, "is_primary": True}
+            ).execute()
+
+    supabase.table("machine_model_specs").upsert(spec_payload(model_id, datos), on_conflict="machine_model_id").execute()
+
+    image_url = datos.get("imagen_url")
+    if image_url and not image_exists(supabase, model_id, image_url):
+        supabase.table("machine_model_images").insert(
+            {
+                "machine_model_id": model_id,
+                "source_image_url": image_url,
+                "source_page_url": url or None,
+                "image_type": "front_photo",
+                "alt_text": f"{fabricante} {modelo}",
+                "is_primary": True,
+                "is_official": True,
+                "license_status": "official_reference_only",
+            }
+        ).execute()
+    return status
+
+
+def read_rows(csv_path: Path) -> list[dict[str, str]]:
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        required = {"Fabricante", "Modelo"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"CSV missing required columns: {', '.join(sorted(missing))}")
+        return list(reader)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Scrape CSV rows and save catalog models directly in Supabase.")
+    parser.add_argument("--csv", default=r"C:\Users\diego\Downloads\vending-machines-formateado.csv")
+    parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--start-row", type=int, default=1, help="1-based CSV row number")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--sleep", type=float, default=1.5)
+    parser.add_argument("--mode", choices=["skip", "update"], default="update")
+    parser.add_argument("--extractor", choices=["firecrawl", "basic"], default="firecrawl")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    load_dotenv(Path(args.env_file))
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not supabase_key:
+        print("Faltan SUPABASE_URL y/o SUPABASE_SERVICE_ROLE_KEY en .env o entorno.", file=sys.stderr)
+        return 2
+
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        print(f"No existe el CSV: {csv_path}", file=sys.stderr)
+        return 2
+
+    rows = read_rows(csv_path)
+    selected = rows[args.start_row - 1 :]
+    if args.limit is not None:
+        selected = selected[: args.limit]
+
+    supabase = create_client(supabase_url, supabase_key)
+    categories = ensure_category_map(supabase)
+    counters = Counters()
+    serper_key = os.environ.get("SERPER_API_KEY")
+    firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
+
+    for offset, row in enumerate(selected, start=args.start_row):
+        fabricante = clean_text(row.get("Fabricante"))
+        modelo = clean_text(row.get("Modelo"))
+        url = clean_text(row.get("URL"))
+        if not fabricante or not modelo:
+            counters.skipped_incomplete += 1
+            print(f"[{offset}] skipped_incomplete")
+            continue
+        try:
+            if not url:
+                url = search_url_with_serper(fabricante, modelo, serper_key) or ""
+            if not url:
+                raise RuntimeError("No URL found. Provide URL column or SERPER_API_KEY.")
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"}:
+                raise RuntimeError(f"Invalid URL scheme: {url}")
+            if args.extractor == "firecrawl":
+                datos = scrape_with_firecrawl(url, fabricante, modelo, firecrawl_key) or scrape_basic(url, fabricante, modelo)
+            else:
+                datos = scrape_basic(url, fabricante, modelo)
+            if args.dry_run:
+                counters.dry_run += 1
+                status = "dry_run"
+            else:
+                status = save_to_supabase(supabase, categories, fabricante, modelo, url, datos, offset, args.mode)
+                setattr(counters, status, getattr(counters, status) + 1)
+            print(f"[{offset}] {fabricante} / {modelo} -> {status}")
+            time.sleep(args.sleep)
+        except Exception as exc:
+            counters.failed += 1
+            print(f"[{offset}] {fabricante} / {modelo} -> failed: {exc}", file=sys.stderr)
+
+    print(json.dumps(counters.__dict__, ensure_ascii=False, indent=2))
+    return 0 if counters.failed == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
