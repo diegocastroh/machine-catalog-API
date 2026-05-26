@@ -58,11 +58,32 @@ Ver outputs de cada extraccion sin guardar:
 python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 5 --dry-run --verbose
 ```
 
+El modo verbose muestra URL resuelta, imagen, categoria, specs detectadas, extracto relevante y score de calidad. Ese score ayuda a detectar paginas genericas, resultados sin imagen, sin specs o donde no aparece el modelo.
+
+Ejecutar con control de calidad:
+
+```powershell
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 50 --verbose --min-quality 0.45 --review-below-quality 0.70
+```
+
+Con `--min-quality`, el script no guarda filas debajo del umbral. Con `--review-below-quality`, las filas guardadas debajo del umbral quedan como `pending_review`; por encima quedan `approved`.
+
 Reanudar:
 
 ```powershell
 python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --start-row 434
 ```
+
+## Crawl4AI mejorado
+
+El extractor local combina el markdown renderizado por navegador con el HTML visible, limpia banners de cookies, normaliza URLs de imagen, resuelve paginas genericas hacia paginas de producto cuando puede y aplica reglas especificas para fabricantes con estructuras especiales.
+
+Casos cubiertos:
+
+- Rheavendors: una URL de coleccion o categoria puede resolverse a la pagina concreta del modelo.
+- Sielaff SiLine Public Series: variantes como `SiLine GF L RP` se resuelven a la pagina de serie y se leen specs de las secciones inferiores.
+- Sitios con banners de cookies: se filtran textos de consentimiento para que no terminen como descripcion principal.
+- Imagenes: se priorizan JPG/PNG/WebP de producto y se descartan logos, favicons, iconos sociales y placeholders.
 
 ## Comportamiento de duplicados
 

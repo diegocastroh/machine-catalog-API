@@ -189,6 +189,14 @@ Ver URL usada, imagen detectada, categoria y muestra del contenido:
 python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 5 --dry-run --verbose
 ```
 
+Ejecutar por bloques con control de calidad:
+
+```bash
+python scripts/scrape_csv_to_supabase.py --csv C:\Users\diego\Downloads\vending-machines-formateado.csv --extractor crawl4ai --start-row 1 --limit 50 --verbose --min-quality 0.45 --review-below-quality 0.70
+```
+
+`--min-quality` evita guardar extracciones demasiado debiles. `--review-below-quality` guarda modelos con baja confianza como `pending_review`; las extracciones sobre el umbral quedan `approved`.
+
 ## Consultas rapidas
 
 Local:

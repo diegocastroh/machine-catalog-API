@@ -37,6 +37,8 @@ except ModuleNotFoundError:  # pragma: no cover - startup dependency message
     )
     raise
 
+from crawling.quality import quality_report
+
 
 CATEGORY_MAP = {
     "coffee": "coffee",
@@ -124,6 +126,7 @@ class Counters:
     updated: int = 0
     skipped_duplicate: int = 0
     skipped_incomplete: int = 0
+    skipped_low_quality: int = 0
     failed: int = 0
     dry_run: int = 0
 
@@ -740,6 +743,12 @@ def save_to_supabase(
     category_code = category_for(datos.get("tipo_maquina"), modelo, datos)
     category_id = categories.get(category_code)
     normalized = slugify(modelo)
+    quality = datos.get("_quality") or {}
+    quality_score = quality.get("score")
+    review_below = datos.get("_review_below_quality", 0.55)
+    model_status = "approved"
+    if isinstance(quality_score, (int, float)) and quality_score < review_below:
+        model_status = "pending_review"
     model_payload = {
         "manufacturer_id": manufacturer["id"],
         "model_name": modelo,
@@ -747,11 +756,11 @@ def save_to_supabase(
         "model_slug": normalized,
         "short_description": None,
         "primary_category_id": category_id,
-        "status": "approved",
+        "status": model_status,
         "lifecycle_status": "unknown",
         "source_url": url or None,
         "official_product_url": url or None,
-        "confidence_score": 0.82,
+        "confidence_score": quality_score if isinstance(quality_score, (int, float)) else 0.82,
     }
     datos = {
         **datos,
@@ -816,6 +825,12 @@ def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url:
         print(f"[{row_number}] Electricas: {json.dumps(energy, ensure_ascii=False)}")
     if hardware:
         print(f"[{row_number}] Hardware: {json.dumps(hardware, ensure_ascii=False)}")
+    quality = datos.get("_quality") or {}
+    if quality:
+        print(
+            f"[{row_number}] Calidad: {quality.get('score')} "
+            f"warnings={json.dumps(quality.get('warnings') or [], ensure_ascii=False)}"
+        )
     basic = datos.get("_basic_extract") or {}
     crawl4ai = datos.get("_crawl4ai_extract") or {}
     sample = basic.get("text_sample") or crawl4ai.get("markdown_sample")
@@ -884,6 +899,18 @@ def main() -> int:
     parser.add_argument("--mode", choices=["skip", "update"], default="update")
     parser.add_argument("--extractor", choices=["firecrawl", "crawl4ai", "basic"], default="firecrawl")
     parser.add_argument("--verbose", action="store_true", help="Print extracted URL, image, category and text sample per row")
+    parser.add_argument(
+        "--min-quality",
+        type=float,
+        default=0.0,
+        help="Skip saving rows whose extraction quality score is below this value.",
+    )
+    parser.add_argument(
+        "--review-below-quality",
+        type=float,
+        default=0.55,
+        help="Save rows below this extraction quality score as pending_review instead of approved.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -923,6 +950,7 @@ def main() -> int:
                 url = search_url_with_serper(fabricante, modelo, serper_key) or ""
             if not url:
                 raise RuntimeError("No URL found. Provide URL column or SERPER_API_KEY.")
+            original_url = url
             url = resolve_product_url(url, fabricante, modelo)
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"}:
@@ -933,11 +961,16 @@ def main() -> int:
                 datos = scrape_with_crawl4ai(url, fabricante, modelo)
             else:
                 datos = scrape_basic(url, fabricante, modelo)
+            datos["_quality"] = quality_report(original_url, url, modelo, datos)
+            datos["_review_below_quality"] = args.review_below_quality
             if args.verbose:
                 print_extraction_preview(offset, fabricante, modelo, url, datos)
             if args.dry_run:
                 counters.dry_run += 1
                 status = "dry_run"
+            elif datos["_quality"]["score"] < args.min_quality:
+                counters.skipped_low_quality += 1
+                status = "skipped_low_quality"
             else:
                 status = save_to_supabase(supabase, categories, fabricante, modelo, url, datos, offset, args.mode)
                 setattr(counters, status, getattr(counters, status) + 1)
