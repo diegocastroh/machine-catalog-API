@@ -169,6 +169,19 @@ def _open_image(image_bytes: bytes):
 
 
 def fetch_image_bytes(url: str) -> Optional[bytes]:
+    if url.startswith("file://"):
+        from urllib.parse import urlparse, unquote
+
+        local_path = unquote(urlparse(url).path)
+        # Windows file:// URIs come out as /C:/... — strip the leading slash.
+        if os.name == "nt" and local_path.startswith("/") and len(local_path) > 3 and local_path[2] == ":":
+            local_path = local_path[1:]
+        try:
+            with open(local_path, "rb") as fh:
+                return fh.read()
+        except OSError as exc:
+            logger.debug("local image read failed for %s: %s", url, exc)
+            return None
     try:
         from . import http_client
 

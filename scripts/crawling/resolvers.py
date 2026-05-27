@@ -150,6 +150,11 @@ def _seed_is_asset(url: str) -> bool:
     return bool(_SEED_ASSET_RE.search(path))
 
 
+def _seed_is_pdf(url: str) -> bool:
+    path = urlparse(url).path or ""
+    return bool(re.search(r"\.pdf(?:$|\?)", path, re.IGNORECASE))
+
+
 def resolve_best_product_url(
     url: str,
     fabricante: str,
@@ -187,11 +192,18 @@ def resolve_best_product_url(
     final_url = nav_url
     chose = "navigation" if nav_changed else "csv"
     if seed_is_asset and sitemap_result is None:
-        chose = "csv_asset_unresolved"
-        print(
-            f"[resolver] {fabricante} / {modelo}: seed URL is an asset ({url}); "
-            f"sitemap found no model match. Skipping HTML extraction."
-        )
+        if _seed_is_pdf(url):
+            chose = "csv_asset_pdf"
+            print(
+                f"[resolver] {fabricante} / {modelo}: seed URL is a PDF ({url}); "
+                f"will extract specs from the PDF directly."
+            )
+        else:
+            chose = "csv_asset_unresolved"
+            print(
+                f"[resolver] {fabricante} / {modelo}: seed URL is an asset ({url}); "
+                f"sitemap found no model match. Skipping HTML extraction."
+            )
     elif sitemap_result and (seed_is_asset or not nav_specific):
         final_url = sitemap_result.url
         chose = "sitemap"
@@ -208,6 +220,7 @@ def resolve_best_product_url(
         chose=chose,
     ).to_dict()
     trace["seed_is_asset"] = seed_is_asset
+    trace["seed_is_pdf"] = _seed_is_pdf(url)
     return final_url, trace
 
 

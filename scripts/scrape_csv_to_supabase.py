@@ -43,6 +43,7 @@ from crawling.ai_extractor import extract_with_ollama, merge_ai_extraction
 from crawling.http_client import pick_user_agent, polite_get, respect_per_host_delay
 from crawling.images import choose_verified_image
 from crawling.jsonld import extract_from_html as extract_jsonld_from_html, merge_into as merge_jsonld_into
+from crawling.pdf_extractor import extract_from_pdf as extract_from_pdf_module
 from crawling.quality import quality_report
 from crawling.resolvers import (
     resolve_best_product_url as resolve_best_product_url_from_module,
@@ -1337,6 +1338,54 @@ def main() -> int:
                     f"[{offset}] {fabricante} / {modelo} -> skipped_asset_url: "
                     f"seed URL is a binary asset and sitemap had no model match ({original_url})"
                 )
+                continue
+            if resolution_trace.get("chose") == "csv_asset_pdf":
+                datos = extract_from_pdf_module(
+                    original_url,
+                    fabricante,
+                    modelo,
+                    use_cache=use_page_cache,
+                    cache_ttl=args.page_cache_ttl,
+                )
+                if not datos:
+                    counters.skipped_asset_url += 1
+                    print(
+                        f"[{offset}] {fabricante} / {modelo} -> skipped_asset_url: "
+                        f"PDF download or text extraction failed ({original_url})"
+                    )
+                    continue
+                pdf_info = datos.get("_pdf_extract") or {}
+                if pdf_info.get("error") == "model_not_found_in_pdf":
+                    counters.skipped_asset_url += 1
+                    print(
+                        f"[{offset}] {fabricante} / {modelo} -> skipped_asset_url: "
+                        f"model {modelo!r} not present in PDF ({original_url})"
+                    )
+                    continue
+                datos["_resolution"] = resolution_trace
+                if image_verifier is not None:
+                    apply_image_verification(
+                        datos,
+                        verifier=image_verifier,
+                        max_candidates=args.image_candidates,
+                    )
+                datos["_quality"] = quality_report(original_url, original_url, modelo, datos)
+                datos["_review_below_quality"] = args.review_below_quality
+                if args.verbose:
+                    print_extraction_preview(offset, fabricante, modelo, original_url, datos)
+                if args.dry_run:
+                    counters.dry_run += 1
+                    status = "dry_run"
+                elif datos["_quality"]["score"] < args.min_quality:
+                    counters.skipped_low_quality += 1
+                    status = "skipped_low_quality"
+                else:
+                    status = save_to_supabase(
+                        supabase, categories, fabricante, modelo, original_url, datos, offset, args.mode
+                    )
+                    setattr(counters, status, getattr(counters, status) + 1)
+                print(f"[{offset}] {fabricante} / {modelo} -> {status} (pdf)")
+                time.sleep(args.sleep)
                 continue
             if args.extractor == "firecrawl":
                 datos = scrape_with_firecrawl(url, fabricante, modelo, firecrawl_key) or scrape_basic(
