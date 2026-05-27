@@ -114,6 +114,16 @@ def _looks_like_card_grid(same_host_links) -> bool:
 
 def _is_generic_or_listing(url: str, modelo: str) -> bool:
     parsed = urlparse(url)
+    # An in-page anchor (#mistral-h85, #section-3) is the navigation
+    # resolver telling us "the product lives here in the page". Treat
+    # that as specific so the sitemap does not overwrite it.
+    if parsed.fragment:
+        fragment_slug = comparable_model(parsed.fragment)
+        model_slug = comparable_model(modelo)
+        if model_slug and any(c.isdigit() for c in model_slug) and model_slug in fragment_slug:
+            return False
+        if fragment_slug:
+            return False
     if parsed.path in _GENERIC_PATHS:
         return True
     if "/collection/categories/" in parsed.path or "/collection/families/" in parsed.path:

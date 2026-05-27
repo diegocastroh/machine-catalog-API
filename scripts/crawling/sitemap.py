@@ -40,6 +40,24 @@ _DEFAULT_TIMEOUT = 20
 _MAX_NESTED_SITEMAPS = 25
 _MAX_URLS_PER_SITEMAP = 20000
 
+# Sitemap entries that are clearly assets, not product pages. WordPress
+# in particular publishes uploads/, image, and document URLs alongside
+# real pages; without this filter the resolver gladly picks a PNG whose
+# filename happens to contain the model code.
+_ASSET_PATH_RE = re.compile(
+    r"\.(?:png|jpe?g|webp|gif|bmp|svg|ico|pdf|zip|rar|7z|tar|gz|bz2|mp4|webm|mov|avi"
+    r"|css|js|map|xml|rss|atom|woff2?|ttf|eot|otf)(?:$|\?)",
+    re.IGNORECASE,
+)
+_ASSET_PATH_HINTS = (
+    "/wp-content/uploads/",
+    "/wp-json/",
+    "/feed/",
+    "/cdn-cgi/",
+    "/static/",
+    "/assets/",
+)
+
 # Common locations to try when robots.txt does not advertise a sitemap.
 _FALLBACK_SITEMAP_PATHS = (
     "/sitemap.xml",
@@ -99,7 +117,10 @@ def resolve_via_sitemap(
     best: Optional[SitemapResolution] = None
     for entry in urls:
         candidate_url = entry["loc"]
-        slug = comparable_model(urlparse(candidate_url).path)
+        candidate_path = urlparse(candidate_url).path
+        if _is_asset_url(candidate_path):
+            continue
+        slug = comparable_model(candidate_path)
         if not slug:
             continue
         matched = [t for t in tokens if t in slug]
@@ -254,6 +275,15 @@ def _fetch_and_parse_sitemap(url: str, *, timeout: int) -> tuple[list[str], list
             if local == "loc" and child.text:
                 urls.append(child.text.strip())
     return nested, urls
+
+
+def _is_asset_url(path: str) -> bool:
+    if not path:
+        return False
+    if _ASSET_PATH_RE.search(path):
+        return True
+    lowered = path.lower()
+    return any(hint in lowered for hint in _ASSET_PATH_HINTS)
 
 
 def _model_tokens(value: str) -> list[str]:
