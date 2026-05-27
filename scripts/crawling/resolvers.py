@@ -33,7 +33,9 @@ def resolve_product_url(url: str, fabricante: str, modelo: str) -> str:
     is_family_page = _looks_like_family_page(parsed.path, modelo)
 
     try:
-        response = requests.get(url, timeout=30, headers={"user-agent": "MachineCatalogImporter/1.0"})
+        from . import http_client
+
+        response = http_client.polite_get(url, timeout=30)
         response.raise_for_status()
     except Exception:
         return url

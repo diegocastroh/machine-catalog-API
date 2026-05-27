@@ -31,12 +31,12 @@ from xml.etree import ElementTree as ET
 import requests
 
 from . import cache as page_cache
+from . import http_client
 from .text_utils import comparable_model
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 20
-_USER_AGENT = "MachineCatalogImporter/1.0 (sitemap-resolver)"
 _MAX_NESTED_SITEMAPS = 25
 _MAX_URLS_PER_SITEMAP = 20000
 
@@ -184,7 +184,7 @@ def _discover_sitemap_urls(host_root: str, *, timeout: int) -> Iterable[str]:
     discovered: list[str] = []
     robots_url = f"{host_root}/robots.txt"
     try:
-        response = requests.get(robots_url, timeout=timeout, headers={"user-agent": _USER_AGENT})
+        response = http_client.polite_get(robots_url, timeout=timeout)
         if response.ok:
             for line in response.text.splitlines():
                 line = line.strip()
@@ -208,10 +208,10 @@ def _discover_sitemap_urls(host_root: str, *, timeout: int) -> Iterable[str]:
 def _fetch_and_parse_sitemap(url: str, *, timeout: int) -> tuple[list[str], list[str]]:
     """Returns (nested_sitemaps, urls)."""
     try:
-        response = requests.get(
+        response = http_client.polite_get(
             url,
             timeout=timeout,
-            headers={"user-agent": _USER_AGENT, "accept": "application/xml,text/xml,*/*"},
+            extra_headers={"accept": "application/xml,text/xml,*/*"},
         )
         if not response.ok or not response.content:
             return [], []

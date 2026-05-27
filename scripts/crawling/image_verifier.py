@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 _CLIP_MODEL_NAME = os.environ.get("CLIP_MODEL", "ViT-B-32")
 _CLIP_PRETRAINED = os.environ.get("CLIP_PRETRAINED", "laion2b_s34b_b79k")
 _REQUEST_TIMEOUT = float(os.environ.get("CLIP_FETCH_TIMEOUT", "20"))
-_USER_AGENT = "MachineCatalogImporter/1.0 (image-verifier)"
 
 POSITIVE_PROMPTS: tuple[str, ...] = (
     "a photo of a vending machine",
@@ -171,7 +170,13 @@ def _open_image(image_bytes: bytes):
 
 def fetch_image_bytes(url: str) -> Optional[bytes]:
     try:
-        response = requests.get(url, timeout=_REQUEST_TIMEOUT, headers={"user-agent": _USER_AGENT}, stream=True)
+        from . import http_client
+
+        response = http_client.polite_get(
+            url,
+            timeout=int(_REQUEST_TIMEOUT),
+            extra_headers={"accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8"},
+        )
         response.raise_for_status()
         content = response.content
         if not content:

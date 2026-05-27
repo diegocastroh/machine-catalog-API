@@ -38,7 +38,9 @@ except ModuleNotFoundError:  # pragma: no cover - startup dependency message
     raise
 
 from crawling import cache as page_cache
+from crawling import http_client
 from crawling.ai_extractor import extract_with_ollama, merge_ai_extraction
+from crawling.http_client import pick_user_agent, polite_get, respect_per_host_delay
 from crawling.images import choose_verified_image
 from crawling.jsonld import extract_from_html as extract_jsonld_from_html, merge_into as merge_jsonld_into
 from crawling.quality import quality_report
@@ -525,7 +527,8 @@ async def crawl4ai_fetch(url: str) -> tuple[str | None, str | None]:
     from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
     from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 
-    browser_config = BrowserConfig(headless=True)
+    respect_per_host_delay(url)
+    browser_config = BrowserConfig(headless=True, user_agent=pick_user_agent())
     run_config = CrawlerRunConfig(cache_mode=CacheMode.BYPASS, markdown_generator=DefaultMarkdownGenerator())
     async with AsyncWebCrawler(config=browser_config) as crawler:
         result = await crawler.arun(url=url, config=run_config)
@@ -555,12 +558,12 @@ def crawl4ai_fetch_cached(url: str, *, use_cache: bool, ttl_seconds: int) -> tup
 
 
 def basic_fetch_cached(url: str, *, use_cache: bool, ttl_seconds: int) -> tuple[str, str]:
-    """Wrap a requests.get with the same disk cache. Returns (html, source)."""
+    """Wrap a polite_get with the same disk cache. Returns (html, source)."""
     if use_cache:
         cached = page_cache.load(url, ttl_seconds=ttl_seconds)
         if cached is not None and cached.html:
             return cached.html, f"cache(age={int(cached.age_seconds)}s)"
-    response = requests.get(url, timeout=30, headers={"user-agent": "MachineCatalogImporter/1.0"})
+    response = polite_get(url, timeout=30)
     response.raise_for_status()
     html = response.text
     if use_cache:
@@ -1000,6 +1003,32 @@ def relevant_sample(text: str, modelo: str) -> str:
     return compact[start:]
 
 
+def _interleave_by_host(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Round-robin rows by their URL host so consecutive ones hit different
+    servers. This spreads load and reduces the chance any single host
+    rate-limits us."""
+    from collections import defaultdict, deque
+
+    buckets: dict[str, deque] = defaultdict(deque)
+    leftovers: deque = deque()
+    for row in rows:
+        url = (row.get("URL") or "").strip()
+        if not url:
+            leftovers.append(row)
+            continue
+        host = urlparse(url).netloc.lower() or "_unknown"
+        buckets[host].append(row)
+    ordered: list[dict[str, str]] = []
+    while buckets:
+        for host in list(buckets.keys()):
+            if buckets[host]:
+                ordered.append(buckets[host].popleft())
+            if not buckets[host]:
+                del buckets[host]
+    ordered.extend(leftovers)
+    return ordered
+
+
 def read_rows(csv_path: Path) -> list[dict[str, str]]:
     with csv_path.open("r", encoding="utf-8-sig", newline="") as file:
         reader = csv.DictReader(file)
@@ -1189,6 +1218,29 @@ def main() -> int:
         default=1.4,
         help="Minimum score a sitemap candidate must beat to override the CSV URL.",
     )
+    parser.add_argument(
+        "--per-host-delay",
+        type=float,
+        default=None,
+        help="Minimum seconds between requests to the same host. Defaults to HTTP_PER_HOST_DELAY env (4.0).",
+    )
+    parser.add_argument(
+        "--request-jitter",
+        type=float,
+        default=None,
+        help="Random extra delay (0..N seconds) added on top of --per-host-delay. Default 1.5s.",
+    )
+    parser.add_argument(
+        "--http-max-retries",
+        type=int,
+        default=None,
+        help="Backoff retries on 429/503/403 responses. Default 2.",
+    )
+    parser.add_argument(
+        "--shuffle-by-host",
+        action="store_true",
+        help="Reorder rows so consecutive ones hit different hosts (spreads load).",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -1209,6 +1261,18 @@ def main() -> int:
     if use_page_cache:
         print(f"[cache] enabled at {page_cache.DEFAULT_CACHE_DIR} (TTL {args.page_cache_ttl}s)")
 
+    if args.per_host_delay is not None:
+        http_client.PER_HOST_DELAY = args.per_host_delay
+    if args.request_jitter is not None:
+        http_client.JITTER_SECONDS = args.request_jitter
+    if args.http_max_retries is not None:
+        http_client.MAX_RETRIES = args.http_max_retries
+    print(
+        f"[http] per-host-delay={http_client.PER_HOST_DELAY}s "
+        f"jitter={http_client.JITTER_SECONDS}s retries={http_client.MAX_RETRIES} "
+        f"ua_pool={len(http_client.USER_AGENTS)}"
+    )
+
     csv_path = Path(args.csv)
     if not csv_path.exists():
         print(f"No existe el CSV: {csv_path}", file=sys.stderr)
@@ -1218,6 +1282,10 @@ def main() -> int:
     selected = rows[args.start_row - 1 :]
     if args.limit is not None:
         selected = selected[: args.limit]
+
+    if args.shuffle_by_host:
+        selected = _interleave_by_host(selected)
+        print(f"[http] shuffled {len(selected)} rows so consecutive ones target different hosts")
 
     supabase = create_client(supabase_url, supabase_key)
     categories = ensure_category_map(supabase)
