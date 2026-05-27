@@ -141,6 +141,7 @@ class Counters:
     skipped_duplicate: int = 0
     skipped_incomplete: int = 0
     skipped_low_quality: int = 0
+    skipped_asset_url: int = 0
     failed: int = 0
     dry_run: int = 0
 
@@ -1330,6 +1331,13 @@ def main() -> int:
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"}:
                 raise RuntimeError(f"Invalid URL scheme: {url}")
+            if resolution_trace.get("chose") == "csv_asset_unresolved":
+                counters.skipped_asset_url += 1
+                print(
+                    f"[{offset}] {fabricante} / {modelo} -> skipped_asset_url: "
+                    f"seed URL is a binary asset and sitemap had no model match ({original_url})"
+                )
+                continue
             if args.extractor == "firecrawl":
                 datos = scrape_with_firecrawl(url, fabricante, modelo, firecrawl_key) or scrape_basic(
                     url, fabricante, modelo, use_cache=use_page_cache, cache_ttl=args.page_cache_ttl

@@ -139,6 +139,17 @@ def _is_generic_or_listing(url: str, modelo: str) -> bool:
     return model_slug not in slug
 
 
+_SEED_ASSET_RE = re.compile(
+    r"\.(?:pdf|png|jpe?g|webp|gif|svg|ico|zip|rar|7z|tar|gz|mp4|webm|mov|avi|css|js|woff2?)(?:$|\?)",
+    re.IGNORECASE,
+)
+
+
+def _seed_is_asset(url: str) -> bool:
+    path = urlparse(url).path or ""
+    return bool(_SEED_ASSET_RE.search(path))
+
+
 def resolve_best_product_url(
     url: str,
     fabricante: str,
@@ -148,17 +159,24 @@ def resolve_best_product_url(
     sitemap_min_score: float = 1.4,
 ) -> tuple[str, dict]:
     """Two-pronged resolution. Tries navigation-based first, then the
-    sitemap of the same host, and picks the better candidate.
+    sitemap of the same host (and its registered domain), and picks the
+    better candidate.
 
-    Returns `(final_url, trace_dict)` where `trace_dict` is suitable for
-    storing on the normalised extraction for auditing.
+    Special-case: when the seed URL itself is a binary asset (PDF, image,
+    zip, etc.), navigation is useless because there are no anchors in a
+    PDF. We skip straight to sitemap. If sitemap also fails, the trace
+    flags `chose="csv_asset_unresolved"` so the caller can refuse to send
+    the URL through the HTML extractor.
+
+    Returns `(final_url, trace_dict)`.
     """
-    nav_url = resolve_product_url(url, fabricante, modelo)
+    seed_is_asset = _seed_is_asset(url)
+    nav_url = url if seed_is_asset else resolve_product_url(url, fabricante, modelo)
     nav_changed = nav_url.rstrip("/") != url.rstrip("/")
-    nav_specific = not _is_generic_or_listing(nav_url, modelo)
+    nav_specific = (not seed_is_asset) and (not _is_generic_or_listing(nav_url, modelo))
 
     sitemap_result: Optional[sitemap_module.SitemapResolution] = None
-    if use_sitemap and not nav_specific:
+    if use_sitemap and (seed_is_asset or not nav_specific):
         try:
             sitemap_result = sitemap_module.resolve_via_sitemap(
                 url, fabricante, modelo, min_score=sitemap_min_score
@@ -168,7 +186,13 @@ def resolve_best_product_url(
 
     final_url = nav_url
     chose = "navigation" if nav_changed else "csv"
-    if sitemap_result and not nav_specific:
+    if seed_is_asset and sitemap_result is None:
+        chose = "csv_asset_unresolved"
+        print(
+            f"[resolver] {fabricante} / {modelo}: seed URL is an asset ({url}); "
+            f"sitemap found no model match. Skipping HTML extraction."
+        )
+    elif sitemap_result and (seed_is_asset or not nav_specific):
         final_url = sitemap_result.url
         chose = "sitemap"
         print(
@@ -178,11 +202,12 @@ def resolve_best_product_url(
 
     trace = sitemap_module.ResolutionTrace(
         final_url=final_url,
-        nav_attempted=True,
+        nav_attempted=not seed_is_asset,
         sitemap=sitemap_result,
         nav_changed=nav_changed,
         chose=chose,
     ).to_dict()
+    trace["seed_is_asset"] = seed_is_asset
     return final_url, trace
 
 

@@ -98,13 +98,32 @@ def resolve_via_sitemap(
     timeout: int = _DEFAULT_TIMEOUT,
 ) -> Optional[SitemapResolution]:
     """Look up the best URL for (fabricante, modelo) on the same host as
-    `seed_url`. Returns `None` if nothing scores above `min_score`."""
+    `seed_url`. If that host has no sitemap or no useful matches, try the
+    registered domain (strip a single subdomain). Returns `None` if
+    nothing scores above `min_score`."""
     parsed = urlparse(seed_url)
     if not parsed.netloc or parsed.scheme not in {"http", "https"}:
         return None
 
-    host_root = f"{parsed.scheme}://{parsed.netloc}"
-    urls = _collect_host_urls(host_root, cache_ttl=cache_ttl, timeout=timeout)
+    hosts_to_try: list[str] = [parsed.netloc]
+    # If host has more than 2 dots (subdomain.example.com), also try the
+    # registered domain. This unlocks cases like shop.jetinno.com -> jetinno.com.
+    parts = parsed.netloc.split(".")
+    if len(parts) >= 3:
+        bare = ".".join(parts[-2:])
+        if bare not in hosts_to_try:
+            hosts_to_try.append(bare)
+        with_www = f"www.{bare}"
+        if with_www not in hosts_to_try:
+            hosts_to_try.append(with_www)
+
+    urls: list[dict] = []
+    for host in hosts_to_try:
+        host_root = f"{parsed.scheme}://{host}"
+        found = _collect_host_urls(host_root, cache_ttl=cache_ttl, timeout=timeout)
+        if found:
+            urls = found
+            break
     if not urls:
         return None
 
