@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -824,6 +824,8 @@ def save_to_supabase(
     datos: dict[str, Any],
     row_number: int,
     mode: str,
+    *,
+    upload_bucket: Optional[str] = None,
 ) -> str:
     manufacturer = ensure_manufacturer(supabase, fabricante)
     existing = find_model(supabase, manufacturer["id"], modelo)
@@ -877,22 +879,85 @@ def save_to_supabase(
 
     supabase.table("machine_model_specs").upsert(spec_payload(model_id, datos), on_conflict="machine_model_id").execute()
 
-    image_url = datos.get("imagen_url")
-    image_url = first_http_url(image_url)
-    if image_url and not image_exists(supabase, model_id, image_url):
-        supabase.table("machine_model_images").insert(
-            {
-                "machine_model_id": model_id,
-                "source_image_url": image_url,
-                "source_page_url": url or None,
-                "image_type": "front_photo",
-                "alt_text": f"{fabricante} {modelo}",
-                "is_primary": True,
-                "is_official": True,
-                "license_status": "official_reference_only",
-            }
-        ).execute()
+    raw_image_url = datos.get("imagen_url")
+    is_local = bool(raw_image_url and str(raw_image_url).startswith("file://"))
+    image_fetch_url = raw_image_url if is_local else (first_http_url(raw_image_url) if raw_image_url else None)
+    # For PDF-extracted images we use the PDF URL as provenance instead
+    # of the file:// path, because source_image_url must be a real URL.
+    pdf_info = datos.get("_pdf_extract") or {}
+    if is_local and pdf_info.get("source_url"):
+        recorded_source_url = pdf_info["source_url"]
+    else:
+        recorded_source_url = image_fetch_url
+
+    if image_fetch_url and recorded_source_url and not image_exists(supabase, model_id, recorded_source_url):
+        row: dict[str, Any] = {
+            "machine_model_id": model_id,
+            "source_image_url": recorded_source_url,
+            "source_page_url": url or None,
+            "image_type": "front_photo",
+            "alt_text": f"{fabricante} {modelo}",
+            "is_primary": True,
+            "is_official": True,
+            "license_status": "official_reference_only",
+        }
+        if upload_bucket:
+            upload = _upload_verified_image(
+                supabase,
+                bucket=upload_bucket,
+                model_id=model_id,
+                image_url=image_fetch_url,
+            )
+            if upload:
+                row["storage_url"] = upload.storage_url
+                row["hash_sha256"] = upload.sha256
+                row["width_px"] = upload.width
+                row["height_px"] = upload.height
+            elif is_local:
+                # We could not upload AND there is no public URL we can
+                # point to. Skip the image row entirely; the model row
+                # still made it in.
+                print(
+                    f"[{row_number}] {fabricante} / {modelo}: storage upload "
+                    f"failed for a PDF image, skipping image row"
+                )
+                return status
+        elif is_local:
+            print(
+                f"[{row_number}] {fabricante} / {modelo}: PDF image not stored "
+                f"(use --upload-images-bucket to enable Supabase Storage upload)"
+            )
+            return status
+        supabase.table("machine_model_images").insert(row).execute()
     return status
+
+
+def _upload_verified_image(
+    supabase: Client,
+    *,
+    bucket: str,
+    model_id: str,
+    image_url: str,
+):
+    """Fetch the verified image bytes and upload them to Supabase Storage.
+    Returns the StorageUpload metadata or `None` on failure."""
+    try:
+        from crawling.image_verifier import fetch_image_bytes
+        from crawling.supabase_storage import upload_image
+    except Exception as exc:  # pragma: no cover - optional deps
+        print(f"[storage] dependencies missing, skipping upload: {exc}", file=sys.stderr)
+        return None
+    image_bytes = fetch_image_bytes(image_url)
+    if not image_bytes:
+        print(f"[storage] could not fetch bytes for {image_url}", file=sys.stderr)
+        return None
+    return upload_image(
+        supabase,
+        image_bytes=image_bytes,
+        model_id=model_id,
+        source_url=image_url,
+        bucket=bucket,
+    )
 
 
 def print_extraction_preview(row_number: int, fabricante: str, modelo: str, url: str, datos: dict[str, Any]) -> None:
@@ -1243,6 +1308,16 @@ def main() -> int:
         action="store_true",
         help="Reorder rows so consecutive ones hit different hosts (spreads load).",
     )
+    parser.add_argument(
+        "--upload-images-bucket",
+        default=os.environ.get("SUPABASE_IMAGES_BUCKET", ""),
+        help=(
+            "Supabase Storage bucket to upload verified images to. When set, "
+            "machine_model_images.storage_url is populated with the public URL. "
+            "Required to store PDF-extracted images. Defaults to env "
+            "SUPABASE_IMAGES_BUCKET, otherwise disabled."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -1294,6 +1369,17 @@ def main() -> int:
     counters = Counters()
     serper_key = os.environ.get("SERPER_API_KEY")
     firecrawl_key = os.environ.get("FIRECRAWL_API_KEY")
+
+    upload_bucket = (args.upload_images_bucket or "").strip() or None
+    if upload_bucket:
+        try:
+            from crawling.supabase_storage import ensure_bucket
+
+            ensure_bucket(supabase, upload_bucket)
+            print(f"[storage] uploads enabled -> bucket {upload_bucket!r}")
+        except Exception as exc:
+            print(f"[storage] could not prepare bucket {upload_bucket!r}: {exc}", file=sys.stderr)
+            upload_bucket = None
 
     image_verifier = None
     if args.verify_images:
@@ -1381,7 +1467,8 @@ def main() -> int:
                     status = "skipped_low_quality"
                 else:
                     status = save_to_supabase(
-                        supabase, categories, fabricante, modelo, original_url, datos, offset, args.mode
+                        supabase, categories, fabricante, modelo, original_url, datos, offset, args.mode,
+                        upload_bucket=upload_bucket,
                     )
                     setattr(counters, status, getattr(counters, status) + 1)
                 print(f"[{offset}] {fabricante} / {modelo} -> {status} (pdf)")
@@ -1441,7 +1528,10 @@ def main() -> int:
                 counters.skipped_low_quality += 1
                 status = "skipped_low_quality"
             else:
-                status = save_to_supabase(supabase, categories, fabricante, modelo, url, datos, offset, args.mode)
+                status = save_to_supabase(
+                    supabase, categories, fabricante, modelo, url, datos, offset, args.mode,
+                    upload_bucket=upload_bucket,
+                )
                 setattr(counters, status, getattr(counters, status) + 1)
             print(f"[{offset}] {fabricante} / {modelo} -> {status}")
             time.sleep(args.sleep)
