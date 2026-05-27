@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Callable, Optional
 from urllib.parse import urljoin
 
@@ -34,8 +35,51 @@ def is_probably_bad_image(url: str) -> bool:
         "youtube",
         "twitter",
         "x-twitter",
+        "flag",
+        "languagesflag",
+        "thumbnail",
+        "thumb",
+        "avatar",
+        "captcha",
+        "sprite-",
+        "/ui/",
     ]
     return lowered.startswith("data:") or lowered.endswith((".svg", ".ico")) or any(x in lowered for x in bad_keywords)
+
+
+def _img_size_hint(img_tag) -> tuple[int | None, int | None]:
+    """Return (width, height) parsed from <img> attributes when present."""
+
+    def _to_int(value):
+        if not value:
+            return None
+        try:
+            return int(str(value).strip().rstrip("px"))
+        except (TypeError, ValueError):
+            return None
+
+    width = _to_int(img_tag.get("width")) or _to_int(img_tag.get("data-width"))
+    height = _to_int(img_tag.get("height")) or _to_int(img_tag.get("data-height"))
+    style = (img_tag.get("style") or "").lower()
+    if width is None:
+        m = re.search(r"width\s*:\s*(\d+)\s*px", style)
+        if m:
+            width = int(m.group(1))
+    if height is None:
+        m = re.search(r"height\s*:\s*(\d+)\s*px", style)
+        if m:
+            height = int(m.group(1))
+    return width, height
+
+
+def _looks_like_tiny(img_tag, min_side: int = 180) -> bool:
+    width, height = _img_size_hint(img_tag)
+    if width is None and height is None:
+        return False
+    if width is not None and height is not None:
+        return max(width, height) < min_side
+    largest = width if width is not None else height
+    return largest is not None and largest < min_side
 
 
 def score_image_url(url: str, fabricante: str, modelo: str) -> int:
@@ -52,6 +96,18 @@ def score_image_url(url: str, fabricante: str, modelo: str) -> int:
             score += 2
     if any(ext in lowered for ext in [".jpg", ".jpeg", ".png", ".webp"]):
         score += 2
+    # Boost user-content CDN paths (CMS-uploaded product images usually
+    # live under /contents/<digits>/images/<digits>.jpg). Penalise static
+    # asset paths shared with site chrome.
+    if re.search(r"/contents/[^/]+/images/\d+", lowered):
+        score += 6
+    if "/static/" in lowered or "/sitefiles3607/" in lowered:
+        score -= 3
+    if "img.website.xin" in lowered or "img.alicdn" in lowered or "/cdn/" in lowered:
+        score += 3
+    # Penalise filename-encoded thumbnails like -150x150.jpg, -40x40.png
+    if re.search(r"-\d{2,4}x\d{2,4}\.[a-z]+$", lowered):
+        score -= 4
     return score
 
 
@@ -64,6 +120,8 @@ def collect_image_candidates(
     soup = BeautifulSoup(html, "html.parser")
     images: list[str] = []
     for img in soup.find_all("img"):
+        if _looks_like_tiny(img):
+            continue
         candidates = [img.get("src"), img.get("data-src"), img.get("data-lazy-src"), img.get("data-original")]
         srcset = img.get("srcset")
         if srcset:

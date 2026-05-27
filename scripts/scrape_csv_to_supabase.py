@@ -1188,7 +1188,7 @@ def main() -> int:
     parser.add_argument(
         "--image-candidates",
         type=int,
-        default=6,
+        default=12,
         help="Maximum number of image candidates to feed through the verifier per page.",
     )
     parser.add_argument(
